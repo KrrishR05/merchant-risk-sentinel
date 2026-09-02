@@ -1,0 +1,188 @@
+@import "tailwindcss";
+
+/* ── RiskSūtra Design System ── */
+
+:root {
+  --bg-primary: #0a0e17;
+  --bg-secondary: #111827;
+  --bg-card: #151c2c;
+  --bg-card-hover: #1a2235;
+  --border-subtle: #1e293b;
+  --border-accent: #2563eb20;
+
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --accent-blue: #3b82f6;
+  --accent-violet: #8b5cf6;
+  --accent-cyan: #06b6d4;
+
+  --risk-low: #10b981;
+  --risk-medium: #f59e0b;
+  --risk-high: #ef4444;
+  --risk-critical: #dc2626;
+
+  --gradient-accent: linear-gradient(135deg, #06b6d4 0%, #3b82f6 50%, #8b5cf6 100%);
+  --gradient-risk: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Cards */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 1.25rem;
+  transition: all 0.2s ease;
+}
+.card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.05);
+}
+
+/* Risk Badges */
+.badge { 
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.2rem 0.6rem; border-radius: 6px; 
+  font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.badge-low { background: rgba(16,185,129,0.15); color: var(--risk-low); }
+.badge-medium { background: rgba(245,158,11,0.15); color: var(--risk-medium); }
+.badge-high { background: rgba(239,68,68,0.15); color: var(--risk-high); }
+.badge-critical { 
+  background: rgba(220,38,38,0.2); color: var(--risk-critical); 
+  animation: pulse-critical 2s ease-in-out infinite;
+}
+
+@keyframes pulse-critical {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); }
+  50% { box-shadow: 0 0 12px 2px rgba(220,38,38,0.3); }
+}
+
+/* Risk Score Arc */
+.risk-score-display {
+  font-size: 2.5rem; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Signal bar */
+.signal-bar {
+  height: 6px; border-radius: 3px; background: var(--border-subtle);
+  overflow: hidden;
+}
+.signal-bar-fill {
+  height: 100%; border-radius: 3px;
+  transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Sidebar */
+.sidebar {
+  width: 240px; min-height: 100vh;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-subtle);
+  padding: 1.5rem 0;
+  display: flex; flex-direction: column;
+}
+.sidebar-brand {
+  padding: 0 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sidebar-nav { flex: 1; padding: 1rem 0; }
+.sidebar-link {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.65rem 1.25rem;
+  color: var(--text-secondary);
+  text-decoration: none; font-size: 0.85rem; font-weight: 500;
+  border-left: 3px solid transparent;
+  transition: all 0.15s ease;
+}
+.sidebar-link:hover, .sidebar-link.active {
+  color: var(--text-primary);
+  background: rgba(59,130,246,0.06);
+  border-left-color: var(--accent-blue);
+}
+
+/* Event pill */
+.event-type-pill {
+  display: inline-block; padding: 0.15rem 0.5rem;
+  border-radius: 4px; font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  background: rgba(59,130,246,0.12); color: var(--accent-blue);
+}
+.event-type-pill.sensitive {
+  background: rgba(239,68,68,0.12); color: var(--risk-high);
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+/* Stat card */
+.stat-value {
+  font-size: 1.75rem; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--gradient-accent);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Button */
+.btn {
+  display: inline-flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 1rem; border-radius: 8px;
+  font-size: 0.8rem; font-weight: 600; cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+.btn-primary {
+  background: var(--accent-blue); color: white;
+}
+.btn-primary:hover { background: #2563eb; }
+.btn-danger {
+  background: rgba(239,68,68,0.15); color: var(--risk-high);
+  border-color: rgba(239,68,68,0.3);
+}
+.btn-danger:hover { background: rgba(239,68,68,0.25); }
+.btn-ghost {
+  background: transparent; color: var(--text-secondary);
+  border-color: var(--border-subtle);
+}
+.btn-ghost:hover { background: var(--bg-card); color: var(--text-primary); }
+
+/* Loading */
+.loading-shimmer {
+  background: linear-gradient(90deg, var(--bg-card) 0%, var(--bg-card-hover) 50%, var(--bg-card) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 8px;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
