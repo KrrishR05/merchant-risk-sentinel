@@ -554,6 +554,26 @@ def get_all_events(limit: int = 200) -> list[Event]:
         raise
 
 
+def get_events_by_ids(event_ids: list[str]) -> list[Event]:
+    """Fetch events matching a list of event_ids."""
+    if not event_ids:
+        return []
+    conn = get_connection()
+    try:
+        placeholders = ",".join(["?"] * len(event_ids))
+        query = f"SELECT * FROM events WHERE event_id IN ({placeholders})"
+        cur = _execute(conn, query, event_ids)
+        rows = _fetchall_as_dicts(cur, EVENT_COLS)
+        if DB_TYPE == "postgresql":
+            cur.close()
+        conn.close()
+        return [_dict_to_event(r) for r in rows]
+    except Exception:
+        conn.close()
+        raise
+
+
+
 def _dict_to_event(d: dict) -> Event:
     ts = d["timestamp"]
     if isinstance(ts, str):

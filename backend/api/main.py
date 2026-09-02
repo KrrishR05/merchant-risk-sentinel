@@ -1,8 +1,9 @@
 """
-RiskSūtra — FastAPI Application
+RiskSūtra — FastAPI Application (Day 2 Intelligence Edition)
 
 Main HTTP API serving the risk intelligence platform.
-Handles event ingestion, merchant queries, risk assessments, and incident management.
+Handles event ingestion, merchant behavioral genome queries, temporal workflow analysis,
+fraud spike detection, syndicate graph abuse clusters, and incident management.
 """
 
 import logging
@@ -23,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db import database as db
 from models.schemas import Event, Merchant, RiskBand
 from services.risk_orchestrator import (
+    get_graph_clusters,
     get_merchant_profile,
     get_merchant_risk,
     get_ordered_event_sequence,
@@ -36,24 +38,16 @@ from services.synthetic_generator import (
     inject_legitimate_spike,
 )
 
-# ──────────────────────────────────────────────
-# Logging
-# ──────────────────────────────────────────────
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("risksutra.api")
 
-# ──────────────────────────────────────────────
-# App
-# ──────────────────────────────────────────────
-
 app = FastAPI(
     title="RiskSūtra API",
-    description="AI Merchant Risk Intelligence — Account Takeover Detection",
-    version="0.1.0",
+    description="AI Merchant Risk Intelligence — Account Takeover & Behavioral Genome Engine",
+    version="0.2.0",
 )
 
 app.add_middleware(
@@ -110,7 +104,7 @@ def health():
     return {
         "status": "ok" if db_status == "ok" else "degraded",
         "service": "RiskSūtra API",
-        "version": "0.1.0",
+        "version": "0.2.0-day2",
         "database": db_status,
         "timestamp": datetime.utcnow().isoformat(),
     }
@@ -161,7 +155,7 @@ def create_events_batch(batch: EventBatch):
 
 
 # ──────────────────────────────────────────────
-# Merchants
+# Merchants & Behavioral Genome
 # ──────────────────────────────────────────────
 
 @app.get("/merchants")
@@ -178,8 +172,33 @@ def get_merchant(merchant_id: str):
     return merchant.model_dump()
 
 
+@app.get("/merchants/{merchant_id}/behavior")
+@app.get("/merchants/{merchant_id}/profile")
+def get_behavior(merchant_id: str):
+    """Retrieve Merchant Behavioral Genome profile."""
+    merchant = db.get_merchant(merchant_id)
+    if not merchant:
+        raise HTTPException(status_code=404, detail=f"Merchant {merchant_id} not found")
+    profile = get_merchant_profile(merchant_id)
+    return profile.model_dump()
+
+
+@app.get("/merchants/{merchant_id}/signals")
+def get_signals(
+    merchant_id: str,
+    limit: int = Query(default=50, le=200),
+):
+    """Retrieve historical deviation signals for a merchant."""
+    merchant = db.get_merchant(merchant_id)
+    if not merchant:
+        raise HTTPException(status_code=404, detail=f"Merchant {merchant_id} not found")
+    signals = db.get_merchant_signals(merchant_id, limit=limit)
+    return {"merchant_id": merchant_id, "signals": [s.model_dump() for s in signals]}
+
+
 @app.get("/merchants/{merchant_id}/risk")
 def get_risk(merchant_id: str):
+    """Retrieve composite risk assessment."""
     merchant = db.get_merchant(merchant_id)
     if not merchant:
         raise HTTPException(status_code=404, detail=f"Merchant {merchant_id} not found")
@@ -187,13 +206,14 @@ def get_risk(merchant_id: str):
     return assessment.model_dump()
 
 
-@app.get("/merchants/{merchant_id}/profile")
-def get_profile(merchant_id: str):
+@app.get("/merchants/{merchant_id}/workflow")
+def get_workflow(merchant_id: str):
+    """Retrieve Temporal Workflow Integrity result."""
     merchant = db.get_merchant(merchant_id)
     if not merchant:
         raise HTTPException(status_code=404, detail=f"Merchant {merchant_id} not found")
-    profile = get_merchant_profile(merchant_id)
-    return profile.model_dump()
+    assessment = get_merchant_risk(merchant_id)
+    return assessment.workflow_result.model_dump() if assessment.workflow_result else {}
 
 
 @app.get("/merchants/{merchant_id}/events")
@@ -215,7 +235,6 @@ def get_timeline(
     end: Optional[str] = None,
     limit: int = Query(default=100, le=500),
 ):
-    """Temporal event sequence — foundation for workflow integrity engine."""
     merchant = db.get_merchant(merchant_id)
     if not merchant:
         raise HTTPException(status_code=404, detail=f"Merchant {merchant_id} not found")
@@ -232,7 +251,7 @@ def get_timeline(
 
 
 # ──────────────────────────────────────────────
-# Incidents
+# Incidents & Evidence Correlator
 # ──────────────────────────────────────────────
 
 @app.get("/incidents")
@@ -249,13 +268,64 @@ def get_incident(incident_id: str):
     return incident.model_dump()
 
 
+@app.get("/incidents/{incident_id}/evidence")
+def get_incident_evidence(incident_id: str):
+    """Retrieve correlated evidence events for an incident."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    events = db.get_events_by_ids(incident.evidence_event_ids)
+    return {
+        "incident_id": incident_id,
+        "merchant_id": incident.merchant_id,
+        "evidence_event_count": len(events),
+        "evidence_events": [e.model_dump() for e in events],
+    }
+
+
 # ──────────────────────────────────────────────
-# Scenario Injection (for demo/testing)
+# Graph & Analytics
+# ──────────────────────────────────────────────
+
+@app.get("/graph/clusters")
+def list_graph_clusters():
+    """Retrieve multi-merchant syndicate abuse clusters."""
+    clusters = get_graph_clusters()
+    return {"clusters": [c.model_dump() for c in clusters]}
+
+
+@app.get("/risk/analytics")
+def get_risk_analytics():
+    """System-wide risk analytics summary."""
+    merchants = db.get_all_merchants()
+    incidents = db.get_all_incidents(limit=100)
+
+    assessments = [get_merchant_risk(m.merchant_id) for m in merchants]
+    high_risk = [a for a in assessments if a.risk_band in (RiskBand.HIGH, RiskBand.CRITICAL)]
+
+    return {
+        "total_merchants": len(merchants),
+        "total_incidents": len(incidents),
+        "active_incidents": len([i for i in incidents if i.status.value == "OPEN"]),
+        "high_risk_merchants_count": len(high_risk),
+        "risk_distribution": {
+            "LOW": len([a for a in assessments if a.risk_band == RiskBand.LOW]),
+            "MEDIUM": len([a for a in assessments if a.risk_band == RiskBand.MEDIUM]),
+            "HIGH": len([a for a in assessments if a.risk_band == RiskBand.HIGH]),
+            "CRITICAL": len([a for a in assessments if a.risk_band == RiskBand.CRITICAL]),
+        },
+        "model_version": "ato-v0.2-day2",
+    }
+
+
+# ──────────────────────────────────────────────
+# Scenario Injection
 # ──────────────────────────────────────────────
 
 class ScenarioRequest(BaseModel):
     merchant_id: str
-    scenario_type: str = "ato_credential_theft"  # or "legitimate_spike"
+    scenario_type: str = "ato_credential_theft"
 
 
 @app.post("/scenarios/inject")
@@ -272,7 +342,6 @@ def inject_scenario(req: ScenarioRequest):
     else:
         raise HTTPException(status_code=400, detail=f"Unknown scenario type: {req.scenario_type}")
 
-    # Ingest through the pipeline
     result = ingest_events_batch(events)
 
     return {
@@ -285,7 +354,7 @@ def inject_scenario(req: ScenarioRequest):
 
 
 # ──────────────────────────────────────────────
-# Overview / Stats
+# Overview
 # ──────────────────────────────────────────────
 
 @app.get("/overview")
@@ -295,7 +364,6 @@ def get_overview():
     incidents = db.get_all_incidents(limit=100)
     recent_events = db.get_all_events(limit=20)
 
-    # Per-merchant risk summary
     merchant_risks = []
     for m in merchants:
         assessment = get_merchant_risk(m.merchant_id)
