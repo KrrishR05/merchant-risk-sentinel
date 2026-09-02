@@ -120,6 +120,48 @@ class RiskSignal(BaseModel):
     value: float = Field(..., ge=0.0, le=1.0, description="Normalized severity 0-1")
     severity: Severity
     source: str = Field(default="baseline_engine", description="Engine that produced the signal")
+    reason: Optional[str] = Field(default=None, description="Human/interpretable reason string")
+    baseline_value: Optional[str] = Field(default=None, description="Historical baseline reference")
+    observed_value: Optional[str] = Field(default=None, description="Observed current anomaly value")
+    evidence_event_ids: list[str] = Field(default_factory=list)
+
+
+# ──────────────────────────────────────────────
+# Workflow Integrity
+# ──────────────────────────────────────────────
+
+class WorkflowResult(BaseModel):
+    workflow_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Suspicious transition score 0-1")
+    matched_patterns: list[str] = Field(default_factory=list, description="E.g. NEW_DEVICE_TO_SENSITIVE_ACTION")
+    transition_anomalies: list[dict] = Field(default_factory=list)
+    chain_events: list[dict] = Field(default_factory=list)
+    evidence_event_ids: list[str] = Field(default_factory=list)
+    is_suspicious_sequence: bool = False
+
+
+# ──────────────────────────────────────────────
+# Fraud-Spike Assessment
+# ──────────────────────────────────────────────
+
+class FraudSpikeAssessment(BaseModel):
+    spike_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    classification: str = Field(default="NORMAL", description="NORMAL, BENIGN_SALE_SPIKE, SUSPICIOUS_SPIKE")
+    baseline_comparison: dict = Field(default_factory=dict)
+    supporting_signals: list[str] = Field(default_factory=list)
+    evidence_event_ids: list[str] = Field(default_factory=list)
+
+
+# ──────────────────────────────────────────────
+# Abuse Cluster (Graph Sentinel)
+# ──────────────────────────────────────────────
+
+class AbuseCluster(BaseModel):
+    cluster_id: str = Field(..., description="Graph cluster ID")
+    entity_count: int = 0
+    shared_devices: int = 0
+    shared_ips: int = 0
+    merchants_involved: list[str] = Field(default_factory=list)
+    risk_score: float = Field(default=0.0, ge=0.0, le=1.0)
     evidence_event_ids: list[str] = Field(default_factory=list)
 
 
@@ -132,8 +174,12 @@ class RiskAssessment(BaseModel):
     risk_score: float = Field(..., ge=0.0, le=100.0)
     risk_band: RiskBand
     top_signals: list[RiskSignal] = Field(default_factory=list)
+    workflow_result: Optional[WorkflowResult] = None
+    fraud_spike: Optional[FraudSpikeAssessment] = None
+    abuse_cluster: Optional[AbuseCluster] = None
+    attack_chain: list[str] = Field(default_factory=list)
     evidence_event_ids: list[str] = Field(default_factory=list)
-    model_version: str = "v0.1.0-statistical"
+    model_version: str = "ato-v0.2-day2"
     assessed_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -145,28 +191,36 @@ class Incident(BaseModel):
     incident_id: str = Field(..., description="Unique incident identifier")
     merchant_id: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
     status: IncidentStatus = IncidentStatus.OPEN
-    incident_type: str = Field(default="ATO", description="Classification: ATO, FRAUD_SPIKE, etc.")
+    incident_type: str = Field(default="ATO", description="Classification: ATO, FRAUD_SPIKE, ABUSE_CLUSTER")
     risk_score: float = Field(..., ge=0.0, le=100.0)
     risk_band: RiskBand
     signal_ids: list[str] = Field(default_factory=list)
+    signals: list[RiskSignal] = Field(default_factory=list)
+    attack_chain: list[str] = Field(default_factory=list)
+    related_entities: dict = Field(default_factory=dict)
     evidence_event_ids: list[str] = Field(default_factory=list)
-    summary: str = Field(default="", description="Human-readable summary (populated by AI later)")
+    model_version: str = "ato-v0.2-day2"
+    summary: str = Field(default="", description="Human-readable summary")
 
 
 # ──────────────────────────────────────────────
-# Merchant Behavioral Profile
+# Merchant Behavioral Profile (Genome)
 # ──────────────────────────────────────────────
 
 class MerchantProfile(BaseModel):
     merchant_id: str
     typical_hours: dict = Field(default_factory=dict, description="Hour → event count distribution")
+    day_of_week_distribution: dict = Field(default_factory=dict, description="Day of week → event count")
     known_devices: list[str] = Field(default_factory=list)
     known_countries: list[str] = Field(default_factory=list)
     known_asns: list[str] = Field(default_factory=list)
+    known_ips: list[str] = Field(default_factory=list)
     api_rate_baseline: dict = Field(default_factory=dict, description="mean, std of API requests/hour")
     transaction_rate_baseline: dict = Field(default_factory=dict, description="mean, std of txn/hour")
     amount_statistics: dict = Field(default_factory=dict, description="p25, p50, p75, p95, max")
+    endpoint_distribution: dict = Field(default_factory=dict, description="Endpoint → request count")
     event_frequency: dict = Field(default_factory=dict, description="Per event_type frequency stats")
     sensitive_action_count: int = 0
     total_events: int = 0
@@ -175,12 +229,29 @@ class MerchantProfile(BaseModel):
 
 
 # ──────────────────────────────────────────────
+# Evaluation Metrics
+# ──────────────────────────────────────────────
+
+class EvaluationMetrics(BaseModel):
+    precision: float
+    recall: float
+    f1_score: float
+    false_positive_rate: float
+    false_positive_count: int
+    false_negative_count: int
+    true_positive_count: int
+    true_negative_count: int
+    detection_lead_time_seconds: float
+    attack_chain_recall: float
+
+
+# ──────────────────────────────────────────────
 # Scenario Metadata (for synthetic injection)
 # ──────────────────────────────────────────────
 
 class ScenarioMetadata(BaseModel):
     scenario_id: str
-    scenario_type: str = Field(..., description="ATO_CREDENTIAL_THEFT, ATO_CONTROL_PLANE, LEGITIMATE_SPIKE")
+    scenario_type: str = Field(..., description="ATO_CREDENTIAL_THEFT, ATO_CONTROL_PLANE, LEGITIMATE_SPIKE, ABUSE_RING")
     merchant_id: str
     attack_start_time: datetime
     attack_end_time: datetime
