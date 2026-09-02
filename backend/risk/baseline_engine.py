@@ -9,7 +9,7 @@ No ML models. No black-box LLMs. Fully deterministic and testable.
 """
 
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import statistics
 import uuid
@@ -238,7 +238,7 @@ def _make_signal(
     return RiskSignal(
         signal_id=f"SIG_{uuid.uuid4().hex[:12]}",
         merchant_id=merchant_id,
-        timestamp=timestamp or datetime.utcnow(),
+        timestamp=timestamp or datetime.now(timezone.utc),
         signal_type=signal_type,
         value=round(value, 4),
         severity=severity,

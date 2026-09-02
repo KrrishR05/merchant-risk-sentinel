@@ -8,10 +8,14 @@ These are the contracts used across all layers: API, services, persistence, and 
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # ──────────────────────────────────────────────
@@ -69,7 +73,7 @@ class Merchant(BaseModel):
     merchant_name: str = Field(..., description="Business name")
     merchant_type: MerchantType
     country: str = Field(default="IN", description="Primary operating country")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     profile_metadata: dict = Field(default_factory=dict, description="Archetype-specific metadata")
 
 
@@ -115,7 +119,7 @@ class Event(BaseModel):
 class RiskSignal(BaseModel):
     signal_id: str = Field(..., description="Unique signal identifier")
     merchant_id: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utc_now)
     signal_type: str = Field(..., description="E.g. NEW_DEVICE, HOUR_DEVIATION, API_BURST")
     value: float = Field(..., ge=0.0, le=1.0, description="Normalized severity 0-1")
     severity: Severity
@@ -180,7 +184,7 @@ class RiskAssessment(BaseModel):
     attack_chain: list[str] = Field(default_factory=list)
     evidence_event_ids: list[str] = Field(default_factory=list)
     model_version: str = "ato-v0.2-day2"
-    assessed_at: datetime = Field(default_factory=datetime.utcnow)
+    assessed_at: datetime = Field(default_factory=utc_now)
 
 
 # ──────────────────────────────────────────────
@@ -190,8 +194,8 @@ class RiskAssessment(BaseModel):
 class Incident(BaseModel):
     incident_id: str = Field(..., description="Unique incident identifier")
     merchant_id: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     status: IncidentStatus = IncidentStatus.OPEN
     incident_type: str = Field(default="ATO", description="Classification: ATO, FRAUD_SPIKE, ABUSE_CLUSTER")
     risk_score: float = Field(..., ge=0.0, le=100.0)

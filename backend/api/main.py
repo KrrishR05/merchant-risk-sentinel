@@ -10,7 +10,7 @@ import logging
 import sys
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -106,7 +106,7 @@ def health():
         "service": "RiskSūtra API",
         "version": "0.2.0-day2",
         "database": db_status,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 

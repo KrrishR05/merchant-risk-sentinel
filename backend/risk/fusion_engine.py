@@ -15,7 +15,7 @@ Model Version: ato-v0.2-day2
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from models.schemas import (
@@ -124,7 +124,7 @@ def compute_risk_assessment(
         attack_chain=attack_chain,
         evidence_event_ids=evidence_ids,
         model_version=MODEL_VERSION,
-        assessed_at=datetime.utcnow(),
+        assessed_at=datetime.now(timezone.utc),
     )
 
 
@@ -150,7 +150,7 @@ def should_create_incident(assessment: RiskAssessment) -> bool:
 
 def create_incident_from_assessment(assessment: RiskAssessment) -> Incident:
     """Construct Incident entity from fused risk assessment."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     incident_type = "ATO"
     if assessment.fraud_spike and assessment.fraud_spike.classification == "SUSPICIOUS_SPIKE":
         incident_type = "FRAUD_SPIKE"

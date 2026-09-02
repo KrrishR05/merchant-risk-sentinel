@@ -18,7 +18,7 @@ Tests for:
 import sys
 import os
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Ensure backend modules are importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -223,11 +223,11 @@ class TestGraphAbuseSentinel:
     def test_multi_merchant_device_sharing(self):
         graph = GraphService()
         e1 = Event(
-            event_id="EVT_g1", merchant_id="MER_01", timestamp=datetime.utcnow(),
+            event_id="EVT_g1", merchant_id="MER_01", timestamp=datetime.now(timezone.utc),
             event_type=EventType.LOGIN, device_id="DEV_shared_99", ip_address="10.0.0.1",
         )
         e2 = Event(
-            event_id="EVT_g2", merchant_id="MER_02", timestamp=datetime.utcnow(),
+            event_id="EVT_g2", merchant_id="MER_02", timestamp=datetime.now(timezone.utc),
             event_type=EventType.LOGIN, device_id="DEV_shared_99", ip_address="10.0.0.1",
         )
         graph.add_event(e1)
