@@ -9,7 +9,7 @@ Random seed is fixed for reproducibility.
 
 import random
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from models.schemas import (
@@ -149,7 +149,7 @@ def generate_normal_events(
     """Generate realistic normal events for a merchant over `days` days."""
     arch = ARCHETYPES[merchant.merchant_type]
     if start_date is None:
-        start_date = datetime(2026, 8, 1)
+        start_date = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
     devices = _generate_devices(merchant.merchant_id, arch)
     device_ips = _generate_ips(merchant.merchant_id, arch, devices)
@@ -308,7 +308,7 @@ def inject_ato_credential_theft(
     New device → unusual location → API burst → sensitive config → transaction spike
     """
     if attack_time is None:
-        attack_time = datetime(2026, 8, 20, 2, 13, 0)  # Unusual hour
+        attack_time = datetime.now(timezone.utc)
 
     attack_device = _uid("DEV_ATK_")
     attack_ip = f"{_rng.randint(40,80)}.{_rng.randint(100,200)}.{_rng.randint(0,255)}.{_rng.randint(1,254)}"
@@ -450,7 +450,7 @@ def inject_legitimate_spike(
     """
     arch = ARCHETYPES[merchant.merchant_type]
     if spike_time is None:
-        spike_time = datetime(2026, 8, 20, 14, 0, 0)  # Normal business hours
+        spike_time = datetime.now(timezone.utc)
 
     # Use KNOWN devices and geography (same deterministic devices as normal events)
     devices = _generate_devices(merchant.merchant_id, arch)

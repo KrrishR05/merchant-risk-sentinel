@@ -15,7 +15,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 # Ensure backend modules are importable
@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import database as db
 from models.schemas import Event, Merchant, RiskBand
+from investigator.agent import RiskSutraAIInvestigator
+from investigator.audit import persist_investigation, retrieve_audit, retrieve_investigation
 from services.risk_orchestrator import (
     get_graph_clusters,
     get_merchant_profile,
@@ -284,6 +286,75 @@ def get_incident_evidence(incident_id: str):
     }
 
 
+@app.post("/incidents/{incident_id}/investigate")
+def run_investigation(incident_id: str):
+    """Trigger AI Investigator loop for an incident."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    investigator = RiskSutraAIInvestigator()
+    output = investigator.investigate_incident(incident_id)
+    result = output["result"]
+    audit = output["audit"]
+
+    persist_investigation(result, audit)
+
+    return {
+        "incident_id": incident_id,
+        "investigation": result.model_dump(),
+        "audit": audit.model_dump(),
+    }
+
+
+@app.post("/incidents/{incident_id}/investigate/stream")
+@app.get("/incidents/{incident_id}/investigate/stream")
+def stream_investigation(incident_id: str):
+    """Stream genuine investigation stage progress and final result SSE events."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    investigator = RiskSutraAIInvestigator()
+    return StreamingResponse(
+        investigator.investigate_incident_stream(incident_id),
+        media_type="text/event-stream"
+    )
+
+
+@app.get("/incidents/{incident_id}/investigation")
+def get_investigation(incident_id: str):
+    """Retrieve existing investigation result if present."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    existing = retrieve_investigation(incident_id)
+    if existing:
+        # Verify exact incident_id, merchant_id, and evidence_version alignment
+        if existing.incident_id != incident.incident_id:
+            raise HTTPException(status_code=404, detail="Incident ID mismatch")
+        if existing.evidence_version != incident.evidence_version:
+            raise HTTPException(status_code=404, detail=f"Investigation stale for incident {incident_id} evidence version {incident.evidence_version}")
+        return existing.model_dump()
+
+    raise HTTPException(status_code=404, detail=f"No investigation performed yet for incident {incident_id}")
+
+
+@app.get("/incidents/{incident_id}/investigation/audit")
+def get_investigation_audit(incident_id: str):
+    """Retrieve investigation audit record for an incident."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    audit = retrieve_audit(incident_id)
+    if not audit:
+        raise HTTPException(status_code=404, detail=f"No investigation audit available yet for incident {incident_id}")
+
+    return audit.model_dump()
+
+
 # ──────────────────────────────────────────────
 # Graph & Analytics
 # ──────────────────────────────────────────────
@@ -343,13 +414,43 @@ def inject_scenario(req: ScenarioRequest):
         raise HTTPException(status_code=400, detail=f"Unknown scenario type: {req.scenario_type}")
 
     result = ingest_events_batch(events)
+    existing_incidents = db.get_merchant_incidents(req.merchant_id)
+    active_incident = result.get("incident_created") or (existing_incidents[0] if existing_incidents else None)
+
+    assessment = result.get("risk_assessment") or get_merchant_risk(req.merchant_id)
+
+    if active_incident:
+        active_incident.evidence_event_ids = [e.event_id for e in events]
+        active_incident.signal_ids = [s.signal_id for s in assessment.top_signals]
+        active_incident.risk_score = assessment.risk_score
+        active_incident.risk_band = assessment.risk_band
+        active_incident.incident_type = "LEGITIMATE_SPIKE_EVAL" if req.scenario_type == "legitimate_spike" else "ATO"
+        active_incident.summary = f"Scenario {req.scenario_type} evaluation incident"
+        active_incident.evidence_version = getattr(active_incident, "evidence_version", 1) + 1
+        db.save_incident(active_incident)
+    else:
+        incident_id = f"INC_EVAL_{req.merchant_id}_{datetime.now(timezone.utc).strftime('%H%M%S')}"
+        active_incident = Incident(
+            incident_id=incident_id,
+            merchant_id=req.merchant_id,
+            created_at=datetime.now(timezone.utc),
+            status=IncidentStatus.OPEN,
+            incident_type="LEGITIMATE_SPIKE_EVAL" if req.scenario_type == "legitimate_spike" else "RISK_EVALUATION",
+            risk_score=assessment.risk_score,
+            risk_band=assessment.risk_band,
+            signal_ids=[s.signal_id for s in assessment.top_signals],
+            evidence_event_ids=[e.event_id for e in events],
+            summary=f"Automated evaluation incident for scenario {req.scenario_type}",
+        )
+        db.save_incident(active_incident)
 
     return {
         "status": "ok",
         "scenario": scenario.model_dump(),
         "events_injected": result["ingested"],
-        "risk_assessment": result["risk_assessment"].model_dump() if result["risk_assessment"] else None,
-        "incident_created": result["incident_created"].model_dump() if result["incident_created"] else None,
+        "risk_assessment": result["risk_assessment"].model_dump() if result["risk_assessment"] else get_merchant_risk(req.merchant_id).model_dump(),
+        "incident_created": active_incident.model_dump(),
+        "incident_id": active_incident.incident_id,
     }
 
 

@@ -66,6 +66,7 @@ export interface Incident {
   risk_band: string;
   signal_ids: string[];
   evidence_event_ids: string[];
+  evidence_version?: number;
   summary: string;
 }
 
@@ -116,6 +117,76 @@ export interface ScenarioResult {
   events_injected: number;
   risk_assessment: RiskAssessment | null;
   incident_created: Incident | null;
+  incident_id?: string;
+}
+
+// Day 3: AI Investigator Interfaces
+
+export interface AttackStage {
+  stage: string;
+  event_ids: string[];
+  explanation: string;
+}
+
+export interface KeyEvidenceItem {
+  event_id: string;
+  signal: string;
+  severity: string;
+  reason: string;
+}
+
+export interface LegitimateExplanation {
+  hypothesis: string;
+  supporting_evidence: string[];
+  counter_evidence: string[];
+  status: 'SUPPORTED' | 'WEAK' | 'REJECTED';
+}
+
+export interface AIInvestigationResult {
+  incident_id: string;
+  assessment: 'LIKELY_ATO' | 'SUSPICIOUS' | 'INCONCLUSIVE' | 'LIKELY_BENIGN';
+  confidence: number;
+  summary: string;
+  why_this_matters: string;
+  attack_progression: AttackStage[];
+  key_evidence: KeyEvidenceItem[];
+  behavioral_deviation: {
+    summary: string;
+    deviations: string[];
+  };
+  workflow_assessment: {
+    matched_pattern: string;
+    transition_anomalies: string[];
+    assessment: string;
+  };
+  legitimate_explanations_considered: LegitimateExplanation[];
+  contradictions_or_uncertainty: string[];
+  recommended_defensive_actions: string[];
+  risk_score_reference: number;
+  risk_score_source: string;
+  evidence_version?: number;
+  model_version: string;
+  investigator_version: string;
+  evidence_event_ids: string[];
+  generated_at: string;
+}
+
+export interface InvestigationAuditRecord {
+  audit_id: string;
+  incident_id: string;
+  merchant_id: string;
+  investigator_version: string;
+  provider: string;
+  model_name: string;
+  start_time: string;
+  end_time: string;
+  duration_ms: number;
+  tools_called: string[];
+  evidence_count: number;
+  assessment: string;
+  confidence: number;
+  is_fallback: boolean;
+  error_message: string | null;
 }
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -128,6 +199,14 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(`API Error ${res.status}: ${errorText}`);
   }
   return res.json();
+}
+
+export interface InvestigationStageEvent {
+  stage_index?: number;
+  stage_key?: string;
+  label?: string;
+  status?: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'DONE' | 'ERROR';
+  detail?: string;
 }
 
 export const api = {
@@ -146,4 +225,59 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ merchant_id: merchantId, scenario_type: scenarioType }),
     }),
+  // AI Investigator APIs
+  investigateIncident: (incidentId: string) =>
+    apiFetch<{ incident_id: string; investigation: AIInvestigationResult; audit: InvestigationAuditRecord }>(
+      `/incidents/${incidentId}/investigate`,
+      { method: 'POST' }
+    ),
+  getInvestigation: (incidentId: string) =>
+    apiFetch<AIInvestigationResult>(`/incidents/${incidentId}/investigation`),
+  getInvestigationAudit: (incidentId: string) =>
+    apiFetch<InvestigationAuditRecord>(`/incidents/${incidentId}/investigation/audit`),
+  streamInvestigation: (
+    incidentId: string,
+    onStage: (event: InvestigationStageEvent) => void,
+    onComplete: (data: { investigation: AIInvestigationResult; audit: InvestigationAuditRecord }) => void,
+    onError: (err: Error) => void
+  ) => {
+    const url = `${API_BASE}/incidents/${incidentId}/investigate/stream`;
+    fetch(url, { method: 'POST' })
+      .then(response => {
+        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function read() {
+          reader?.read().then(({ done, value }) => {
+            if (done) return;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(trimmed.slice(6));
+                  if (data.status === 'DONE') {
+                    onComplete({ investigation: data.investigation, audit: data.audit });
+                  } else if (data.status === 'ERROR') {
+                    onError(new Error(data.error || 'Stream error'));
+                  } else {
+                    onStage(data);
+                  }
+                } catch (e) {
+                  console.error('Failed to parse SSE line:', e);
+                }
+              }
+            }
+            read();
+          }).catch(onError);
+        }
+        read();
+      })
+      .catch(onError);
+  },
 };

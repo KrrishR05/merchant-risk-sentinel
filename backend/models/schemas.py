@@ -205,6 +205,7 @@ class Incident(BaseModel):
     attack_chain: list[str] = Field(default_factory=list)
     related_entities: dict = Field(default_factory=dict)
     evidence_event_ids: list[str] = Field(default_factory=list)
+    evidence_version: int = Field(default=1, description="Snapshot version incremented on scenario/event changes")
     model_version: str = "ato-v0.2-day2"
     summary: str = Field(default="", description="Human-readable summary")
 
@@ -261,3 +262,99 @@ class ScenarioMetadata(BaseModel):
     attack_end_time: datetime
     injected_event_ids: list[str] = Field(default_factory=list)
     label: str = Field(default="attack", description="attack or benign")
+
+
+# ──────────────────────────────────────────────
+# Day 3: AI Investigator Schemas
+# ──────────────────────────────────────────────
+
+class AssessmentVerdict(str, enum.Enum):
+    LIKELY_ATO = "LIKELY_ATO"
+    SUSPICIOUS = "SUSPICIOUS"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    LIKELY_BENIGN = "LIKELY_BENIGN"
+
+
+class LegitimateStatus(str, enum.Enum):
+    SUPPORTED = "SUPPORTED"
+    WEAK = "WEAK"
+    REJECTED = "REJECTED"
+
+
+class AttackStage(BaseModel):
+    stage: str = Field(..., description="E.g. New Device, Geo Deviation, Sensitive Config Change")
+    event_ids: list[str] = Field(default_factory=list)
+    explanation: str = Field(..., description="Why this event fits into the attack sequence")
+
+
+class KeyEvidenceItem(BaseModel):
+    event_id: str
+    signal: str
+    severity: Severity
+    reason: str
+
+
+class LegitimateExplanation(BaseModel):
+    hypothesis: str = Field(..., description="E.g. Benign sale campaign, Known merchant travel")
+    supporting_evidence: list[str] = Field(default_factory=list)
+    counter_evidence: list[str] = Field(default_factory=list)
+    status: LegitimateStatus = LegitimateStatus.REJECTED
+
+
+class InvestigationContext(BaseModel):
+    incident_id: str
+    merchant_id: str
+    merchant_name: str
+    merchant_type: str
+    country: str
+    risk_score: float
+    risk_band: RiskBand
+    model_version: str
+    evidence_version: int = 1
+    top_signals: list[dict] = Field(default_factory=list)
+    evidence_events: list[dict] = Field(default_factory=list)
+    genome_baseline: dict = Field(default_factory=dict)
+    workflow_matches: list[str] = Field(default_factory=list)
+    fraud_spike_classification: Optional[str] = None
+    abuse_cluster_info: Optional[dict] = None
+    related_incidents_count: int = 0
+
+
+class AIInvestigationResult(BaseModel):
+    incident_id: str
+    assessment: AssessmentVerdict
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    summary: str = Field(..., description="High-level narrative summary")
+    why_this_matters: str = Field(..., description="Analyst justification")
+    attack_progression: list[AttackStage] = Field(default_factory=list)
+    key_evidence: list[KeyEvidenceItem] = Field(default_factory=list)
+    behavioral_deviation: dict = Field(default_factory=dict, description="{summary: ..., deviations: [...]}")
+    workflow_assessment: dict = Field(default_factory=dict, description="{matched_pattern: ..., transition_anomalies: [...], assessment: ...}")
+    legitimate_explanations_considered: list[LegitimateExplanation] = Field(default_factory=list)
+    contradictions_or_uncertainty: list[str] = Field(default_factory=list)
+    recommended_defensive_actions: list[str] = Field(default_factory=list)
+    risk_score_reference: float
+    risk_score_source: str = "RiskSūtra deterministic risk engine"
+    model_version: str = "ato-v0.2-day2"
+    investigator_version: str = "risksutra-ai-inv-v1"
+    evidence_event_ids: list[str] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utc_now)
+
+
+class InvestigationAuditRecord(BaseModel):
+    audit_id: str
+    incident_id: str
+    merchant_id: str
+    investigator_version: str = "risksutra-ai-inv-v1"
+    provider: str
+    model_name: str
+    start_time: datetime
+    end_time: datetime
+    duration_ms: float
+    tools_called: list[str] = Field(default_factory=list)
+    evidence_count: int = 0
+    assessment: AssessmentVerdict
+    confidence: float
+    is_fallback: bool = False
+    error_message: Optional[str] = None
+

@@ -117,9 +117,12 @@ def ingest_events_batch(events: list[Event]) -> dict:
     inserted = db.save_events_bulk(events)
     _graph_service.build_graph_from_events(events)
 
+    def _to_utc(dt):
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
     all_events = db.get_merchant_events(merchant_id)
-    batch_start = min(e.timestamp for e in events)
-    baseline_events = [e for e in all_events if e.timestamp < batch_start]
+    batch_start = min(_to_utc(e.timestamp) for e in events)
+    baseline_events = [e for e in all_events if _to_utc(e.timestamp) < batch_start]
 
     if not baseline_events:
         mid = len(all_events) // 2
