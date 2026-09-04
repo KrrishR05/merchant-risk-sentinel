@@ -356,8 +356,8 @@ def _check_hour_deviation(profile: MerchantProfile, events: list[Event]) -> Opti
 
     unusual_events = []
     for e in events:
-        hour_str = str(e.timestamp.hour)
-        hour_count = profile.typical_hours.get(hour_str, 0)
+        h = e.timestamp.hour
+        hour_count = profile.typical_hours.get(h, profile.typical_hours.get(str(h), 0))
         # If this hour has < 2% of total baseline activity, it's unusual
         if hour_count / total_baseline < 0.02:
             unusual_events.append(e)

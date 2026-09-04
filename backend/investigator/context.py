@@ -54,38 +54,30 @@ def build_investigation_context(incident_id: str) -> InvestigationContext:
         })
 
     # Fetch evidence events
-    evidence_events = []
+    raw_events = []
     if incident.evidence_event_ids:
         raw_events = db.get_events_by_ids(incident.evidence_event_ids)
-        for e in raw_events:
-            evidence_events.append({
-                "event_id": e.event_id,
-                "timestamp": e.timestamp.isoformat(),
-                "event_type": e.event_type.value,
-                "device_id": e.device_id,
-                "session_id": e.session_id,
-                "ip_address": e.ip_address,
-                "country": e.country,
-                "asn": e.asn,
-                "transaction_id": e.transaction_id,
-                "amount": e.amount,
-                "endpoint": e.endpoint,
-                "action": e.action,
-            })
-    else:
-        # Fallback to recent events
+
+    # Fallback to recent events if specific event IDs were not found in store
+    if not raw_events:
         raw_events = db.get_recent_events(incident.merchant_id, limit=20)
-        for e in raw_events:
-            evidence_events.append({
-                "event_id": e.event_id,
-                "timestamp": e.timestamp.isoformat(),
-                "event_type": e.event_type.value,
-                "device_id": e.device_id,
-                "ip_address": e.ip_address,
-                "country": e.country,
-                "amount": e.amount,
-                "action": e.action,
-            })
+
+    evidence_events = []
+    for e in raw_events:
+        evidence_events.append({
+            "event_id": e.event_id,
+            "timestamp": e.timestamp.isoformat(),
+            "event_type": e.event_type.value if hasattr(e.event_type, "value") else str(e.event_type),
+            "device_id": e.device_id,
+            "session_id": getattr(e, "session_id", None),
+            "ip_address": e.ip_address,
+            "country": e.country,
+            "asn": getattr(e, "asn", None),
+            "transaction_id": getattr(e, "transaction_id", None),
+            "amount": e.amount,
+            "endpoint": getattr(e, "endpoint", None),
+            "action": getattr(e, "action", None),
+        })
 
     # Fetch Behavioral Genome baseline summary
     all_events = db.get_merchant_events(incident.merchant_id)

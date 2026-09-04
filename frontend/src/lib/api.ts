@@ -253,7 +253,7 @@ export const api = {
   getMerchantProfile: (id: string) => apiFetch<MerchantProfile>(`/merchants/${id}/profile`),
   getMerchantEvents: (id: string, limit = 50) =>
     apiFetch<{ events: MerchantEvent[] }>(`/merchants/${id}/events?limit=${limit}`),
-  getIncidents: (limit = 50) => apiFetch<{ incidents: Incident[] }>(`/incidents?limit=${limit}`),
+  getIncidents: (limit = 200) => apiFetch<{ incidents: Incident[] }>(`/incidents?limit=${limit}`),
   getIncident: (id: string) => apiFetch<Incident>(`/incidents/${id}`),
   injectScenario: (merchantId: string, scenarioType: string) =>
     apiFetch<ScenarioResult>('/scenarios/inject', {

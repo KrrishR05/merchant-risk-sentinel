@@ -39,6 +39,22 @@ class WorkflowIntegrityEngine:
             "weight": 0.25,
             "description": "Off-peak hour combined with sensitive administrative changes",
         },
+        "GEO_DEVIATION_API_BURST": {
+            "weight": 0.40,
+            "description": "Unfamiliar country/IP login followed by rapid API probing/burst activity",
+        },
+        "SUSPICIOUS_GEO_VELOCITY_SEQUENCE": {
+            "weight": 0.45,
+            "description": "Foreign geography access combined with high-frequency API or transaction anomaly",
+        },
+        "AUTH_BRUTEFORCE_CHAIN": {
+            "weight": 0.45,
+            "description": "Multiple authentication failures followed by login and rapid privileged actions",
+        },
+        "STEALTH_INTERLEAVED_ATO": {
+            "weight": 0.45,
+            "description": "Unauthorized foreign entity executing recon/harvesting while mixed with normal traffic",
+        },
     }
 
     def evaluate(
@@ -66,16 +82,26 @@ class WorkflowIntegrityEngine:
         has_new_device_signal = "NEW_DEVICE" in signal_types or "NEW_COUNTRY" in signal_types or "NEW_IP" in signal_types
         has_sensitive_signal = "SENSITIVE_ACTION_ANOMALY" in signal_types or "SENSITIVE_ACTION_SPIKE" in signal_types
         has_unusual_hour_signal = "UNUSUAL_HOUR" in signal_types or "HOUR_DEVIATION" in signal_types
+        has_auth_fail_signal = "AUTH_FAILURE_ANOMALY" in signal_types
 
         sensitive_events = [e for e in sorted_events if e.event_type in (EventType.CONFIG_CHANGE, EventType.PAYOUT_EVENT, EventType.ACCOUNT_ACTION)]
         new_identity_events = [
             e for e in sorted_events
-            if (e.device_id and e.device_id not in profile.known_devices)
-            or (e.country and e.country not in profile.known_countries)
+            if (e.device_id and profile.known_devices and e.device_id not in profile.known_devices)
+            or (e.country and profile.known_countries and e.country not in profile.known_countries)
             or (e.ip_address and profile.known_ips and e.ip_address not in profile.known_ips)
+        ]
+        foreign_events = [
+            e for e in sorted_events
+            if e.country and profile.known_countries and e.country not in profile.known_countries
         ]
         api_events = [e for e in sorted_events if e.event_type == EventType.API_REQUEST]
         txn_events = [e for e in sorted_events if e.event_type in (EventType.TRANSACTION, EventType.TRANSACTION_RESULT)]
+        auth_failures = [
+            e for e in sorted_events
+            if e.event_type == EventType.AUTH_FAILURE or (e.event_type == EventType.LOGIN and e.action == "login_failed")
+        ]
+        login_events = [e for e in sorted_events if e.event_type == EventType.LOGIN]
 
         # 1. Pattern: NEW_DEVICE_TO_SENSITIVE_ACTION
         if new_identity_events and sensitive_events:
@@ -98,7 +124,7 @@ class WorkflowIntegrityEngine:
 
         # 2. Pattern: API_BURST_TO_PAYOUT_CHANGE
         payout_events = [e for e in sensitive_events if e.event_type == EventType.PAYOUT_EVENT or e.action == "update_payout_account"]
-        if len(api_events) >= 5 and payout_events:
+        if len(api_events) >= 3 and payout_events:
             first_api = api_events[0]
             for p_evt in payout_events:
                 time_diff = (p_evt.timestamp - first_api.timestamp).total_seconds()
@@ -123,13 +149,51 @@ class WorkflowIntegrityEngine:
             for s_evt in sensitive_events:
                 chain_evidence_ids.add(s_evt.event_id)
 
+        # 5. Pattern: AUTH_BRUTEFORCE_CHAIN (Case B)
+        if (auth_failures or has_auth_fail_signal) and (login_events or sensitive_events):
+            matched_patterns.add("AUTH_BRUTEFORCE_CHAIN")
+            for f_evt in auth_failures:
+                chain_evidence_ids.add(f_evt.event_id)
+            for l_evt in login_events:
+                chain_evidence_ids.add(l_evt.event_id)
+            for s_evt in sensitive_events:
+                chain_evidence_ids.add(s_evt.event_id)
+
+        # 6. Pattern: GEO_DEVIATION_API_BURST & SUSPICIOUS_GEO_VELOCITY_SEQUENCE (Case C)
+        anomalous_geo_identity = foreign_events or [
+            e for e in new_identity_events if e.country and profile.known_countries and e.country not in profile.known_countries
+        ]
+        if anomalous_geo_identity and len(api_events) >= 5:
+            matched_patterns.add("GEO_DEVIATION_API_BURST")
+            for g_evt in anomalous_geo_identity:
+                chain_evidence_ids.add(g_evt.event_id)
+            for a_evt in api_events[:5]:
+                chain_evidence_ids.add(a_evt.event_id)
+
+        if (anomalous_geo_identity or new_identity_events) and txn_events and (len(api_events) >= 3 or len(txn_events) >= 3):
+            matched_patterns.add("SUSPICIOUS_GEO_VELOCITY_SEQUENCE")
+            for g_evt in anomalous_geo_identity or new_identity_events:
+                chain_evidence_ids.add(g_evt.event_id)
+            for t_evt in txn_events:
+                chain_evidence_ids.add(t_evt.event_id)
+
+        # 7. Pattern: STEALTH_INTERLEAVED_ATO (Case E)
+        if new_identity_events and (len(api_events) >= 2 or sensitive_events) and len(sorted_events) > len(new_identity_events):
+            matched_patterns.add("STEALTH_INTERLEAVED_ATO")
+            for id_evt in new_identity_events:
+                chain_evidence_ids.add(id_evt.event_id)
+            for a_evt in api_events:
+                chain_evidence_ids.add(a_evt.event_id)
+
         # Context Check for Legitimate Spikes:
-        # If high transaction volume BUT NO new identity events and NO sensitive actions:
+        # If high transaction volume BUT NO new identity events, NO sensitive actions, and NO auth failures:
         is_legitimate_context = (
             len(new_identity_events) == 0
             and len(sensitive_events) == 0
+            and len(auth_failures) == 0
             and not has_new_device_signal
             and not has_sensitive_signal
+            and not has_auth_fail_signal
         )
 
         if is_legitimate_context:
@@ -137,10 +201,11 @@ class WorkflowIntegrityEngine:
             workflow_score = 0.05
             matched_patterns.clear()
             transition_anomalies.clear()
+            chain_evidence_ids.clear()
         else:
             # Score based on pattern weights and progression length
             raw_score = sum(self.ATTACK_PATTERNS[p]["weight"] for p in matched_patterns if p in self.ATTACK_PATTERNS)
-            if has_new_device_signal and has_sensitive_signal:
+            if has_new_device_signal and (has_sensitive_signal or "GEO_DEVIATION_API_BURST" in matched_patterns):
                 raw_score += 0.20
             workflow_score = round(min(1.0, raw_score), 4)
 

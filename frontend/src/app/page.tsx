@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   api, Overview, MerchantProfile, RiskAssessment, MerchantEvent, Incident, ScenarioResult,
   AIInvestigationResult, InvestigationAuditRecord, HistoricalMatch, LearningIntelligence
@@ -34,7 +34,7 @@ function formatTime(ts: string) {
 
 const SENSITIVE_EVENTS = new Set(['CONFIG_CHANGE', 'PAYOUT_EVENT', 'ACCOUNT_ACTION', 'AUTH_FAILURE']);
 
-type View = 'overview' | 'merchant';
+type View = 'overview' | 'merchant' | 'incidents';
 type InvestigationState = 'NOT_RUN' | 'RUNNING' | 'COMPLETED' | 'FAILED';
 
 export default function Dashboard() {
@@ -46,6 +46,7 @@ export default function Dashboard() {
   const [events, setEvents] = useState<MerchantEvent[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [activeIncident, setActiveIncident] = useState<Incident | null>(null);
+  const activeIncidentRef = useRef<Incident | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [scenarioResult, setScenarioResult] = useState<ScenarioResult | null>(null);
@@ -75,7 +76,7 @@ export default function Dashboard() {
     try {
       setLoading(true);
       setError(null);
-      const [ov, inc] = await Promise.all([api.getOverview(), api.getIncidents()]);
+      const [ov, inc] = await Promise.all([api.getOverview(), api.getIncidents(200)]);
       setOverview(ov);
       setIncidents(inc.incidents);
     } catch (e: unknown) {
@@ -85,8 +86,8 @@ export default function Dashboard() {
     }
   }, []);
 
-  // PART 3 & PART 4: Merchant selection strictly loads deterministic data and checks status ONLY
-  const loadMerchant = useCallback(async (id: string) => {
+  // Merchant selection strictly loads deterministic data and NEVER auto-hydrates AI investigations
+  const loadMerchant = useCallback(async (id: string, targetIncidentId?: string) => {
     try {
       setLoading(true);
       setError(null);
@@ -100,7 +101,7 @@ export default function Dashboard() {
         api.getMerchantRisk(id),
         api.getMerchantProfile(id),
         api.getMerchantEvents(id, 40),
-        api.getIncidents(100),
+        api.getIncidents(200),
       ]);
 
       setRisk(r);
@@ -108,44 +109,27 @@ export default function Dashboard() {
       setEvents(ev.events);
       setSelectedMerchant(id);
 
-      // Strictly isolate to the latest active incident for this specific merchant
+      // Filter incidents for this specific merchant
       const merchantIncidents = incList.incidents
         .filter(i => i.merchant_id === id)
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-      const activeInc = merchantIncidents.length > 0 ? merchantIncidents[0] : null;
-      setActiveIncident(activeInc);
+      // Target specific incident or default to latest
+      const activeInc = targetIncidentId
+        ? merchantIncidents.find(i => i.incident_id === targetIncidentId) || (merchantIncidents.length > 0 ? merchantIncidents[0] : null)
+        : (merchantIncidents.length > 0 ? merchantIncidents[0] : null);
 
-      if (activeInc) {
-        try {
-          // Check investigation STATUS ONLY — NEVER invoke POST /investigate on selection
-          const invData = await api.getInvestigation(activeInc.incident_id);
-          // Strict verification: must match incident_id, merchant_id, and exact evidence_version
-          if (
-            invData &&
-            invData.incident_id === activeInc.incident_id &&
-            (invData.evidence_version || 1) === (activeInc.evidence_version || 1)
-          ) {
-            setInvestigation(invData);
-            const auditData = await api.getInvestigationAudit(activeInc.incident_id);
-            setAudit(auditData);
-            setInvestigationState('COMPLETED');
-          } else {
-            setInvestigation(null);
-            setAudit(null);
-            setInvestigationState('NOT_RUN');
-          }
-        } catch {
-          // 404 means NOT_RUN for this exact incident & evidence version
-          setInvestigation(null);
-          setAudit(null);
-          setInvestigationState('NOT_RUN');
-        }
-      } else {
-        setInvestigation(null);
-        setAudit(null);
-        setInvestigationState('NOT_RUN');
-      }
+      setActiveIncident(activeInc);
+      activeIncidentRef.current = activeInc;
+
+      // STRICT NON-NEGOTIABLE PRODUCT RULE:
+      // Normal merchant/incident navigation MUST ALWAYS keep AI Investigator in NOT_RUN state.
+      // An existing completed investigation in the database MUST NEVER automatically hydrate or display.
+      // The user must explicitly click "Run AI Investigation" to run and display results.
+      setInvestigation(null);
+      setAudit(null);
+      setInvestigationError(null);
+      setInvestigationState('NOT_RUN');
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load merchant data');
     } finally {
@@ -157,9 +141,22 @@ export default function Dashboard() {
     loadOverview();
   }, [loadOverview]);
 
-  const selectMerchant = (id: string) => {
+  const selectMerchant = (id: string, targetIncidentId?: string) => {
     setView('merchant');
-    loadMerchant(id);
+    loadMerchant(id, targetIncidentId);
+  };
+
+  const handleSelectIncidentForMerchant = (targetIncidentId: string) => {
+    const target = incidents.find(i => i.incident_id === targetIncidentId);
+    if (target) {
+      setActiveIncident(target);
+      activeIncidentRef.current = target;
+      // Reset investigation state machine on incident switch
+      setInvestigation(null);
+      setAudit(null);
+      setInvestigationError(null);
+      setInvestigationState('NOT_RUN');
+    }
   };
 
   const goHome = () => {
@@ -168,7 +165,8 @@ export default function Dashboard() {
     loadOverview();
   };
 
-  // PART 21: Explicit Scenario Injection triggers new telemetry and auto-runs AI
+  // EXPLICIT SCENARIO INJECTION EXCEPTION:
+  // User explicitly initiated simulation -> creates new telemetry and incident, and auto-runs AI
   const injectScenario = async (type: string) => {
     if (!selectedMerchant || injecting) return;
     setInjecting(true);
@@ -176,10 +174,10 @@ export default function Dashboard() {
     try {
       const result = await api.injectScenario(selectedMerchant, type);
       setScenarioResult(result);
-      await loadMerchant(selectedMerchant);
+      const targetIncId = result.incident_id || (result.incident_created && result.incident_created.incident_id);
+      await loadMerchant(selectedMerchant, targetIncId || undefined);
       await loadOverview();
 
-      const targetIncId = result.incident_id || (result.incident_created && result.incident_created.incident_id);
       if (targetIncId) {
         runInvestigation(targetIncId);
       }
@@ -215,6 +213,8 @@ export default function Dashboard() {
     api.streamInvestigation(
       incidentId,
       (event) => {
+        // Guard against stale stream callbacks if merchant/incident changed
+        if (activeIncidentRef.current?.incident_id !== incidentId) return;
         if (event.stage_index) {
           setStageProgress(prev =>
             prev.map(s => {
@@ -231,11 +231,14 @@ export default function Dashboard() {
         }
       },
       (data) => {
+        // Guard against stale stream callbacks if merchant/incident changed
+        if (activeIncidentRef.current?.incident_id !== incidentId) return;
         setInvestigation(data.investigation);
         setAudit(data.audit);
         setInvestigationState('COMPLETED');
       },
       (err) => {
+        if (activeIncidentRef.current?.incident_id !== incidentId) return;
         setInvestigationError(err.message || 'Investigation pipeline failed');
         setInvestigationState('FAILED');
       }
@@ -296,8 +299,15 @@ export default function Dashboard() {
             </a>
           ))}
           <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '0.75rem 1.25rem' }} />
-          <a className="sidebar-link" style={{ cursor: 'pointer', opacity: 0.7 }}>
-            <span>⊞</span> Incidents ({incidents.length})
+          <a
+            className={`sidebar-link ${view === 'incidents' ? 'active' : ''}`}
+            onClick={() => {
+              setView('incidents');
+              loadOverview();
+            }}
+            style={{ cursor: 'pointer' }}
+          >
+            <span>⊞</span> Incidents ({overview?.total_incidents ?? incidents.length})
           </a>
         </nav>
         <div style={{ padding: '0.75rem 1.25rem', borderTop: '1px solid var(--border-subtle)' }}>
@@ -338,7 +348,7 @@ export default function Dashboard() {
 
         {view === 'overview' ? (
           <OverviewView overview={overview} incidents={incidents} loading={loading} onSelectMerchant={selectMerchant} />
-        ) : (
+        ) : view === 'merchant' ? (
           <MerchantView
             merchantId={selectedMerchant!}
             risk={risk}
@@ -357,9 +367,18 @@ export default function Dashboard() {
             investigationError={investigationError}
             stageProgress={stageProgress}
             onRunInvestigation={runInvestigation}
+            onSelectIncident={handleSelectIncidentForMerchant}
             onUpdateStatus={handleUpdateStatus}
             onSubmitFeedback={handleAnalystFeedback}
             statusUpdating={statusUpdating}
+          />
+        ) : (
+          <IncidentsView
+            incidents={incidents}
+            overview={overview}
+            loading={loading}
+            onSelectIncident={(merchantId, incidentId) => selectMerchant(merchantId, incidentId)}
+            onBack={goHome}
           />
         )}
       </main>
@@ -369,7 +388,7 @@ export default function Dashboard() {
 
 // ── Overview View ──
 function OverviewView({ overview, incidents, loading, onSelectMerchant }: {
-  overview: Overview | null; incidents: Incident[]; loading: boolean; onSelectMerchant: (id: string) => void;
+  overview: Overview | null; incidents: Incident[]; loading: boolean; onSelectMerchant: (id: string, targetIncidentId?: string) => void;
 }) {
   if (loading || !overview) return <LoadingGrid />;
   return (
@@ -413,14 +432,28 @@ function OverviewView({ overview, incidents, loading, onSelectMerchant }: {
         <div className="card">
           <h2 style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '1rem', color: 'var(--text-secondary)' }}>Recent Risk Incidents</h2>
           {incidents.slice(0, 5).map((inc, idx) => (
-            <div key={`${inc.incident_id}-${idx}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
+            <div
+              key={`${inc.incident_id}-${idx}`}
+              onClick={() => onSelectMerchant(inc.merchant_id, inc.incident_id)}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '0.6rem 0.75rem',
+                borderBottom: '1px solid var(--border-subtle)',
+                cursor: 'pointer',
+                borderRadius: 6,
+                transition: 'background 0.15s ease'
+              }}
+            >
               <div>
-                <span style={{ fontWeight: 600, fontSize: '0.8rem' }}>{inc.incident_id}</span>
+                <span style={{ fontWeight: 600, fontSize: '0.8rem', color: '#60a5fa' }}>{inc.incident_id}</span>
                 <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '0.75rem' }}>{inc.merchant_id} · {inc.incident_type}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <span style={{ color: riskColor(inc.risk_band), fontWeight: 700, fontSize: '0.85rem' }}>{inc.risk_score.toFixed(1)}</span>
                 <span className={badgeClass(inc.risk_band)}>{inc.risk_band}</span>
+                <span style={{ color: '#60a5fa', fontSize: '0.75rem' }}>Inspect →</span>
               </div>
             </div>
           ))}
@@ -430,11 +463,275 @@ function OverviewView({ overview, incidents, loading, onSelectMerchant }: {
   );
 }
 
+// ── Global Incident Queue View ──
+function IncidentsView({
+  incidents,
+  overview,
+  loading,
+  onSelectIncident,
+  onBack,
+}: {
+  incidents: Incident[];
+  overview: Overview | null;
+  loading: boolean;
+  onSelectIncident: (merchantId: string, incidentId: string) => void;
+  onBack: () => void;
+}) {
+  const [bandFilter, setBandFilter] = useState<string>('ALL');
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  const merchantNames: Record<string, string> = {};
+  if (overview?.merchant_risks) {
+    overview.merchant_risks.forEach(m => {
+      merchantNames[m.merchant_id] = m.merchant_name;
+    });
+  }
+
+  const filtered = incidents.filter(inc => {
+    if (bandFilter !== 'ALL' && inc.risk_band !== bandFilter) return false;
+    if (statusFilter !== 'ALL' && inc.status !== statusFilter) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const mName = (merchantNames[inc.merchant_id] || '').toLowerCase();
+      const mId = inc.merchant_id.toLowerCase();
+      const incId = inc.incident_id.toLowerCase();
+      const summary = (inc.summary || '').toLowerCase();
+      if (!incId.includes(q) && !mId.includes(q) && !mName.includes(q) && !summary.includes(q)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const criticalCount = incidents.filter(i => i.risk_band === 'CRITICAL').length;
+  const highCount = incidents.filter(i => i.risk_band === 'HIGH').length;
+  const containedCount = incidents.filter(i => i.status === 'CONTAINED' || i.status === 'RESOLVED').length;
+
+  if (loading) return <LoadingGrid />;
+
+  return (
+    <div className="animate-in">
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
+        <div>
+          <button
+            onClick={onBack}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#60a5fa',
+              cursor: 'pointer',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              padding: 0,
+              marginBottom: '0.5rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.35rem',
+            }}
+          >
+            ← Back to Overview
+          </button>
+          <h1 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+            Global Incident Queue ({overview?.total_incidents ?? incidents.length})
+          </h1>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+            Auditable incident registry of detected Account Takeover events, suspicious temporal workflows, and defensive actions across all merchants.
+          </p>
+        </div>
+      </div>
+
+      {/* KPI Stat Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
+        <StatCard label="Total Incidents" value={overview?.total_incidents ?? incidents.length} />
+        <StatCard label="Critical Risk" value={criticalCount} accent={criticalCount > 0 ? 'var(--risk-critical)' : undefined} />
+        <StatCard label="High Risk" value={highCount} accent={highCount > 0 ? 'var(--risk-high)' : undefined} />
+        <StatCard label="Contained / Resolved" value={containedCount} accent={containedCount > 0 ? 'var(--risk-low)' : undefined} />
+      </div>
+
+      {/* Filters Bar */}
+      <div className="card" style={{ marginBottom: '1.25rem', padding: '1rem 1.25rem' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
+          {/* Search Box */}
+          <div style={{ flex: '1 1 240px', maxWidth: '340px' }}>
+            <input
+              type="text"
+              placeholder="Search by incident ID, merchant..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              style={{
+                width: '100%',
+                background: 'rgba(15, 23, 42, 0.6)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: '8px',
+                padding: '0.45rem 0.75rem',
+                fontSize: '0.75rem',
+                color: 'var(--text-primary)',
+                outline: 'none',
+              }}
+            />
+          </div>
+
+          {/* Risk Band Filters */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginRight: '0.2rem' }}>Band:</span>
+            {['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(b => (
+              <button
+                key={b}
+                onClick={() => setBandFilter(b)}
+                style={{
+                  background: bandFilter === b ? (b === 'ALL' ? 'var(--accent-blue)' : riskColor(b)) : 'rgba(30, 41, 59, 0.5)',
+                  color: bandFilter === b ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid',
+                  borderColor: bandFilter === b ? 'transparent' : 'var(--border-subtle)',
+                  borderRadius: '6px',
+                  padding: '0.25rem 0.6rem',
+                  fontSize: '0.68rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {b}
+              </button>
+            ))}
+          </div>
+
+          {/* Status Filter */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginRight: '0.2rem' }}>Status:</span>
+            {['ALL', 'OPEN', 'CONTAINED', 'RECOVERY_REQUIRED', 'RESOLVED'].map(s => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                style={{
+                  background: statusFilter === s ? 'rgba(59, 130, 246, 0.2)' : 'rgba(30, 41, 59, 0.5)',
+                  color: statusFilter === s ? '#60a5fa' : 'var(--text-secondary)',
+                  border: '1px solid',
+                  borderColor: statusFilter === s ? '#3b82f6' : 'var(--border-subtle)',
+                  borderRadius: '6px',
+                  padding: '0.25rem 0.6rem',
+                  fontSize: '0.68rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {s.replace(/_/g, ' ')}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Incidents Table */}
+      <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border-subtle)', background: 'rgba(15, 23, 42, 0.5)' }}>
+              {['Incident ID', 'Target Merchant', 'Risk Band & Score', 'Status', 'Evidence Events', 'Detected At', 'Action'].map(h => (
+                <th key={h} style={{ textAlign: 'left', padding: '0.7rem 1rem', color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr>
+                <td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-muted)' }}>
+                  No incidents match the active search or filter criteria.
+                </td>
+              </tr>
+            ) : (
+              filtered.map((inc, idx) => {
+                const mName = merchantNames[inc.merchant_id] || inc.merchant_id;
+                return (
+                  <tr
+                    key={`${inc.incident_id}-${idx}`}
+                    style={{
+                      borderBottom: '1px solid var(--border-subtle)',
+                      transition: 'background 0.15s ease',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => onSelectIncident(inc.merchant_id, inc.incident_id)}
+                  >
+                    <td style={{ padding: '0.7rem 1rem', fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      <div>{inc.incident_id}</div>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{inc.incident_type}</span>
+                    </td>
+                    <td style={{ padding: '0.7rem 1rem' }}>
+                      <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{mName}</div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{inc.merchant_id}</div>
+                    </td>
+                    <td style={{ padding: '0.7rem 1rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ color: riskColor(inc.risk_band), fontWeight: 700, fontVariantNumeric: 'tabular-nums', fontSize: '0.9rem' }}>
+                          {inc.risk_score.toFixed(1)}
+                        </span>
+                        <span className={badgeClass(inc.risk_band)}>{inc.risk_band}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding: '0.7rem 1rem' }}>
+                      <span style={{
+                        padding: '0.2rem 0.5rem',
+                        borderRadius: '4px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        background: inc.status === 'CONTAINED' || inc.status === 'RESOLVED' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                        color: inc.status === 'CONTAINED' || inc.status === 'RESOLVED' ? '#10b981' : '#60a5fa',
+                        border: `1px solid ${inc.status === 'CONTAINED' || inc.status === 'RESOLVED' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(59, 130, 246, 0.3)'}`
+                      }}>
+                        {inc.status.replace(/_/g, ' ')}
+                      </span>
+                    </td>
+                    <td style={{ padding: '0.7rem 1rem', color: 'var(--text-secondary)' }}>
+                      {inc.evidence_event_ids?.length || 0} events
+                    </td>
+                    <td style={{ padding: '0.7rem 1rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', fontSize: '0.72rem' }}>
+                      {formatTime(inc.created_at)}
+                    </td>
+                    <td style={{ padding: '0.7rem 1rem' }}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectIncident(inc.merchant_id, inc.incident_id);
+                        }}
+                        style={{
+                          background: 'rgba(59, 130, 246, 0.12)',
+                          border: '1px solid rgba(59, 130, 246, 0.3)',
+                          color: '#60a5fa',
+                          borderRadius: '6px',
+                          padding: '0.3rem 0.65rem',
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.3rem',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        Investigate →
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── Merchant View with Unified AI Investigator Workspace ──
 function MerchantView({
   merchantId, risk, profile, events, incidents, activeIncident, loading, onInject, injecting,
   scenarioResult, onBack, investigation, audit, investigationState, investigationError,
-  stageProgress, onRunInvestigation, onUpdateStatus, onSubmitFeedback, statusUpdating
+  stageProgress, onRunInvestigation, onSelectIncident, onUpdateStatus, onSubmitFeedback, statusUpdating
 }: {
   merchantId: string; risk: RiskAssessment | null; profile: MerchantProfile | null;
   events: MerchantEvent[]; incidents: Incident[]; activeIncident: Incident | null; loading: boolean;
@@ -443,13 +740,17 @@ function MerchantView({
   investigationState: InvestigationState; investigationError: string | null;
   stageProgress: { index: number; label: string; status: 'PENDING' | 'RUNNING' | 'COMPLETED'; detail?: string }[];
   onRunInvestigation: (incidentId: string) => void;
+  onSelectIncident?: (incidentId: string) => void;
   onUpdateStatus: (status: string) => void;
   onSubmitFeedback: (outcome: string) => void;
   statusUpdating: boolean;
 }) {
   if (loading || !risk || !profile) return <LoadingGrid />;
 
-  const merchantIncident = activeIncident || incidents.find(i => i.merchant_id === merchantId);
+  const merchantIncidents = incidents
+    .filter(i => i.merchant_id === merchantId)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const merchantIncident = activeIncident || (merchantIncidents.length > 0 ? merchantIncidents[0] : null);
 
   return (
     <div className="animate-in">
@@ -458,11 +759,36 @@ function MerchantView({
           <button className="btn btn-ghost" onClick={onBack}>← Back</button>
           <h1 style={{ fontSize: '1.2rem', fontWeight: 700 }}>{merchantId}</h1>
           <span className={badgeClass(risk.risk_band)}>{risk.risk_band}</span>
-          {merchantIncident && (
+          {merchantIncidents.length > 1 ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(255,255,255,0.06)', padding: '0.2rem 0.6rem', borderRadius: 6 }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Incident:</span>
+              <select
+                id="merchant-incident-selector"
+                value={merchantIncident?.incident_id || ''}
+                onChange={(e) => onSelectIncident && onSelectIncident(e.target.value)}
+                style={{
+                  background: 'rgba(15, 23, 42, 0.9)',
+                  color: '#60a5fa',
+                  border: '1px solid rgba(59, 130, 246, 0.4)',
+                  borderRadius: 4,
+                  padding: '0.2rem 0.5rem',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                {merchantIncidents.map(inc => (
+                  <option key={inc.incident_id} value={inc.incident_id}>
+                    {inc.incident_id} ({inc.risk_band} {inc.risk_score.toFixed(1)}) · {inc.incident_type}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : merchantIncident ? (
             <span style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem', borderRadius: 4, background: 'rgba(255,255,255,0.08)', color: 'var(--text-secondary)' }}>
               Active Incident: <strong style={{ color: '#60a5fa' }}>{merchantIncident.incident_id}</strong> (v{merchantIncident.evidence_version || 1})
             </span>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -618,14 +944,14 @@ function MerchantView({
 
         {/* ── STATE 3: NOT_RUN ── */}
         {investigationState === 'NOT_RUN' && (
-          <div style={{ textAlign: 'center', padding: '2.5rem 1.5rem', background: 'rgba(0,0,0,0.25)', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+          <div id="ai-investigation-not-run" style={{ textAlign: 'center', padding: '2.5rem 1.5rem', background: 'rgba(0,0,0,0.25)', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
             <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🛡️</div>
             <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.3rem' }}>
-              AI Investigation Not Yet Run For This Incident
+              Investigation not started.
             </h3>
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: 520, margin: '0 auto', lineHeight: 1.5 }}>
               Deterministic risk assessment indicates <strong>{risk.risk_band}</strong> risk (score: {risk.risk_score.toFixed(1)}).
-              Click <strong>&quot;Run AI Investigation&quot;</strong> above to trigger the forensic analysis pipeline across behavioral genome, temporal graph, historical cases, and resolution planning.
+              Click <strong>&quot;Run AI Investigation&quot;</strong> above to start the forensic analysis pipeline across behavioral genome, temporal graph, historical cases, and resolution planning.
             </p>
           </div>
         )}

@@ -244,7 +244,7 @@ class MockProvider(AIProvider):
                 attack_progression.append(
                     AttackStage(
                         stage=f"Stage {stage_idx}: Control Plane Modification",
-                        event_ids=config_events[:5] if config_events else [events[0]["event_id"]],
+                        event_ids=config_events[:5] if config_events else ([events[0]["event_id"]] if events else []),
                         explanation="Critical settlement destination or security notification preferences modified post-login.",
                     )
                 )
@@ -255,7 +255,7 @@ class MockProvider(AIProvider):
                 attack_progression.append(
                     AttackStage(
                         stage=f"Stage {stage_idx}: Transaction Velocity Spike",
-                        event_ids=txn_events[:5] if txn_events else [events[-1]["event_id"]],
+                        event_ids=txn_events[:5] if txn_events else ([events[-1]["event_id"]] if events else []),
                         explanation=f"High-frequency transaction stream ({len(txn_events)} events) executed post-modification.",
                     )
                 )

@@ -62,8 +62,20 @@ class IncidentStatus(str, enum.Enum):
     INVESTIGATING = "INVESTIGATING"
     CONTAINED = "CONTAINED"
     RECOVERING = "RECOVERING"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
     RESOLVED = "RESOLVED"
     FALSE_POSITIVE = "FALSE_POSITIVE"
+
+
+class DefensiveAction(str, enum.Enum):
+    """Strictly bounded, defense-only containment and recovery actions."""
+    REQUIRE_STEP_UP_MFA = "REQUIRE_STEP_UP_MFA"
+    INVALIDATE_SUSPICIOUS_SESSION = "INVALIDATE_SUSPICIOUS_SESSION"
+    RESTRICT_SENSITIVE_OPERATIONS = "RESTRICT_SENSITIVE_OPERATIONS"
+    REQUIRE_MERCHANT_VERIFICATION = "REQUIRE_MERCHANT_VERIFICATION"
+    REVOKE_COMPROMISED_API_KEYS = "REVOKE_COMPROMISED_API_KEYS"
+    INITIATE_SECURITY_REVIEW = "INITIATE_SECURITY_REVIEW"
+    TEMPORARY_PAYOUT_HOLD = "TEMPORARY_PAYOUT_HOLD"
 
 
 # ──────────────────────────────────────────────
@@ -435,4 +447,55 @@ class InvestigationAuditRecord(BaseModel):
     confidence: float
     is_fallback: bool = False
     error_message: Optional[str] = None
+
+
+class ActionExecutionRequest(BaseModel):
+    action: DefensiveAction
+    reason: str = Field(..., description="Security justification for defensive action")
+    actor: str = Field(default="system_policy_gate", description="Identity or policy triggering the action")
+    parameters: dict = Field(default_factory=dict, description="Action-specific parameters e.g. session_id, device_id")
+
+
+class ActionExecutionResult(BaseModel):
+    execution_id: str
+    incident_id: str
+    merchant_id: str
+    action: DefensiveAction
+    status: str  # "EXECUTED", "BLOCKED_BY_POLICY"
+    policy_check_passed: bool
+    policy_reason: str
+    resulting_incident_status: IncidentStatus
+    timestamp: datetime = Field(default_factory=utc_now)
+    audit_notes: str
+
+
+class EvaluationCostModel(BaseModel):
+    """
+    Configurable false-positive cost model for Razorpay Track 02 compliance.
+    Explicitly tracks FP investigation friction vs FN account takeover loss.
+    """
+    fp_unit_cost: float = 2500.0  # INR (Assumed analyst time, customer friction, ops review)
+    fn_unit_cost: float = 250000.0  # INR (Assumed average ATO direct loss, chargebacks, merchant recovery)
+    currency: str = "INR"
+    assumptions_note: str = (
+        "ASSUMPTION: Model assumes ₹2,500 per false positive alert (analyst triage & merchant verification friction) "
+        "and ₹250,000 per false negative ATO loss (direct fraud theft, disputes, and recovery expense). "
+        "These figures are configurable simulation assumptions and do not represent Razorpay proprietary financial data."
+    )
+
+    def calculate_cost(self, fp_count: int, fn_count: int) -> dict:
+        fp_cost = fp_count * self.fp_unit_cost
+        fn_cost = fn_count * self.fn_unit_cost
+        total_cost = fp_cost + fn_cost
+        return {
+            "fp_count": fp_count,
+            "fp_unit_cost": self.fp_unit_cost,
+            "fp_total_cost": fp_cost,
+            "fn_count": fn_count,
+            "fn_unit_cost": self.fn_unit_cost,
+            "fn_total_cost": fn_cost,
+            "total_expected_cost": total_cost,
+            "currency": self.currency,
+            "assumptions_note": self.assumptions_note,
+        }
 

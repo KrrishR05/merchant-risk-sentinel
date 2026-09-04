@@ -101,8 +101,22 @@ ARCHETYPES = {
 # ──────────────────────────────────────────────
 
 def generate_merchants() -> list[Merchant]:
-    """Generate one merchant per archetype."""
-    merchants = []
+    """Generate all 5 canonical merchants across archetypes."""
+    merchants = [
+        Merchant(
+            merchant_id="MER_test_001",
+            merchant_name="Test Restaurant Alpha",
+            merchant_type=MerchantType.RESTAURANT,
+            country="IN",
+            created_at=datetime(2026, 1, 1),
+            profile_metadata={
+                "archetype": MerchantType.RESTAURANT.value,
+                "peak_hours": ARCHETYPES[MerchantType.RESTAURANT]["peak_hours"],
+                "known_device_count": ARCHETYPES[MerchantType.RESTAURANT]["devices"],
+                "known_countries": ARCHETYPES[MerchantType.RESTAURANT]["countries"],
+            },
+        )
+    ]
     for i, (mtype, arch) in enumerate(ARCHETYPES.items()):
         m = Merchant(
             merchant_id=f"MER_{mtype.value.lower()}_{i+1:03d}",
@@ -496,3 +510,548 @@ def inject_legitimate_spike(
     )
 
     return events, scenario
+
+
+def inject_ato_case_b_network_pivot(
+    merchant: Merchant,
+    attack_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Case B: Known device, new network with authentication brute-force pivot.
+    Known device fingerprint but novel proxy IP/ASN -> 4 rapid auth failures -> login -> API burst -> security settings change.
+    """
+    if attack_time is None:
+        attack_time = datetime.now(timezone.utc)
+    arch = ARCHETYPES[merchant.merchant_type]
+    known_devices = _generate_devices(merchant.merchant_id, arch)
+    target_device = known_devices[0]
+
+    pivot_ip = f"185.{_rng.randint(100, 220)}.{_rng.randint(10, 250)}.{_rng.randint(1, 254)}"
+    pivot_asn = "AS16276"
+    pivot_session = _uid("SES_PIVOT_")
+    events, event_ids = [], []
+
+    # 4 auth failures
+    for i in range(4):
+        e = Event(
+            event_id=_uid("EVT_ATO_B_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=attack_time + timedelta(seconds=i * 20),
+            event_type=EventType.AUTH_FAILURE,
+            device_id=target_device,
+            ip_address=pivot_ip,
+            country="IN",
+            asn=pivot_asn,
+            metadata={"generated": True, "scenario": "ato_network_pivot", "failure_reason": "invalid_password"},
+        )
+        events.append(e)
+        event_ids.append(e.event_id)
+
+    # Successful login
+    e_login = Event(
+        event_id=_uid("EVT_ATO_B_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time + timedelta(minutes=2),
+        event_type=EventType.LOGIN,
+        device_id=target_device,
+        session_id=pivot_session,
+        ip_address=pivot_ip,
+        country="IN",
+        asn=pivot_asn,
+        metadata={"generated": True, "scenario": "ato_network_pivot"},
+    )
+    events.append(e_login)
+    event_ids.append(e_login.event_id)
+
+    # API key generation
+    for i in range(5):
+        e_api = Event(
+            event_id=_uid("EVT_ATO_B_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=attack_time + timedelta(minutes=2, seconds=30 + i * 10),
+            event_type=EventType.API_REQUEST,
+            device_id=target_device,
+            session_id=pivot_session,
+            ip_address=pivot_ip,
+            country="IN",
+            asn=pivot_asn,
+            endpoint="/api/keys",
+            action="create_api_key",
+            metadata={"generated": True, "scenario": "ato_network_pivot"},
+        )
+        events.append(e_api)
+        event_ids.append(e_api.event_id)
+
+    # Sensitive config update
+    e_cfg = Event(
+        event_id=_uid("EVT_ATO_B_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time + timedelta(minutes=3, seconds=45),
+        event_type=EventType.CONFIG_CHANGE,
+        device_id=target_device,
+        session_id=pivot_session,
+        ip_address=pivot_ip,
+        country="IN",
+        asn=pivot_asn,
+        action="update_security_settings",
+        resource="security_policy",
+        metadata={"generated": True, "scenario": "ato_network_pivot", "sensitive": True},
+    )
+    events.append(e_cfg)
+    event_ids.append(e_cfg.event_id)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="ATO_CASE_B_NETWORK_PIVOT",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=attack_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="attack",
+    )
+    return events, scenario
+
+
+def inject_ato_case_c_geo_spike(
+    merchant: Merchant,
+    attack_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Case C: Foreign geographic access + high API burst + transaction spike without sensitive config change.
+    """
+    if attack_time is None:
+        attack_time = datetime.now(timezone.utc)
+    attack_dev = _uid("DEV_GEO_")
+    foreign_ip = f"102.164.{_rng.randint(10, 200)}.{_rng.randint(1, 254)}"
+    foreign_country = "NG"
+    session_id = _uid("SES_GEO_")
+    events, event_ids = [], []
+
+    # Login
+    e_log = Event(
+        event_id=_uid("EVT_ATO_C_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time,
+        event_type=EventType.LOGIN,
+        device_id=attack_dev,
+        session_id=session_id,
+        ip_address=foreign_ip,
+        country=foreign_country,
+        asn="AS37148",
+        metadata={"generated": True, "scenario": "ato_geo_spike"},
+    )
+    events.append(e_log)
+    event_ids.append(e_log.event_id)
+
+    # API burst
+    for i in range(10):
+        e_api = Event(
+            event_id=_uid("EVT_ATO_C_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=attack_time + timedelta(seconds=15 + i * 5),
+            event_type=EventType.API_REQUEST,
+            device_id=attack_dev,
+            session_id=session_id,
+            ip_address=foreign_ip,
+            country=foreign_country,
+            asn="AS37148",
+            endpoint="/api/payments",
+            metadata={"generated": True, "scenario": "ato_geo_spike"},
+        )
+        events.append(e_api)
+        event_ids.append(e_api.event_id)
+
+    # Spike transactions
+    for i in range(6):
+        e_txn = Event(
+            event_id=_uid("EVT_ATO_C_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=attack_time + timedelta(minutes=2 + i),
+            event_type=EventType.TRANSACTION,
+            device_id=attack_dev,
+            session_id=session_id,
+            ip_address=foreign_ip,
+            country=foreign_country,
+            asn="AS37148",
+            amount=round(_rng.uniform(15000, 45000), 2),
+            currency="INR",
+            payment_method="card",
+            metadata={"generated": True, "scenario": "ato_geo_spike"},
+        )
+        events.append(e_txn)
+        event_ids.append(e_txn.event_id)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="ATO_CASE_C_GEO_SPIKE",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=attack_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="attack",
+    )
+    return events, scenario
+
+
+def inject_ato_case_d_payout_drain(
+    merchant: Merchant,
+    attack_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Case D: Rapid credential takeover immediately followed by settlement payout hijack.
+    """
+    if attack_time is None:
+        attack_time = datetime.now(timezone.utc)
+    attack_dev = _uid("DEV_DRAIN_")
+    attack_ip = f"194.165.{_rng.randint(10, 250)}.{_rng.randint(1, 254)}"
+    session_id = _uid("SES_DRAIN_")
+    events, event_ids = [], []
+
+    # Nighttime login
+    e_log = Event(
+        event_id=_uid("EVT_ATO_D_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time,
+        event_type=EventType.LOGIN,
+        device_id=attack_dev,
+        session_id=session_id,
+        ip_address=attack_ip,
+        country="RU",
+        asn="AS48282",
+        metadata={"generated": True, "scenario": "ato_payout_drain"},
+    )
+    events.append(e_log)
+    event_ids.append(e_log.event_id)
+
+    # Payout account updated within 30 seconds
+    e_payout_up = Event(
+        event_id=_uid("EVT_ATO_D_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time + timedelta(seconds=30),
+        event_type=EventType.PAYOUT_EVENT,
+        device_id=attack_dev,
+        session_id=session_id,
+        ip_address=attack_ip,
+        country="RU",
+        asn="AS48282",
+        action="update_payout_account",
+        resource="payout_destination",
+        metadata={"generated": True, "scenario": "ato_payout_drain", "sensitive": True},
+    )
+    events.append(e_payout_up)
+    event_ids.append(e_payout_up.event_id)
+
+    # Payout creation request
+    e_payout_req = Event(
+        event_id=_uid("EVT_ATO_D_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time + timedelta(minutes=1, seconds=15),
+        event_type=EventType.PAYOUT_EVENT,
+        device_id=attack_dev,
+        session_id=session_id,
+        ip_address=attack_ip,
+        country="RU",
+        asn="AS48282",
+        action="create_payout",
+        amount=150000.0,
+        currency="INR",
+        metadata={"generated": True, "scenario": "ato_payout_drain", "sensitive": True},
+    )
+    events.append(e_payout_req)
+    event_ids.append(e_payout_req.event_id)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="ATO_CASE_D_PAYOUT_DRAIN",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=attack_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="attack",
+    )
+    return events, scenario
+
+
+def inject_ato_case_e_stealth_mixed(
+    merchant: Merchant,
+    attack_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Case E: Stealth mixed scenario — interleaved normal customer checkouts with unauthorized session querying API keys.
+    """
+    if attack_time is None:
+        attack_time = datetime.now(timezone.utc)
+    arch = ARCHETYPES[merchant.merchant_type]
+    known_devs = _generate_devices(merchant.merchant_id, arch)
+    known_ips = _generate_ips(merchant.merchant_id, arch, known_devs)
+
+    bad_dev = _uid("DEV_STEALTH_")
+    bad_ip = f"91.240.{_rng.randint(10, 200)}.{_rng.randint(1, 254)}"
+    events, event_ids = [], []
+
+    # Normal order
+    e_norm1 = Event(
+        event_id=_uid("EVT_NORM_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time,
+        event_type=EventType.TRANSACTION,
+        device_id=known_devs[0],
+        ip_address=known_ips[known_devs[0]][0],
+        country="IN",
+        amount=round(arch["txn_amount_mean"], 2),
+        currency="INR",
+        metadata={"generated": True, "scenario": "stealth_mixed", "legitimate": True},
+    )
+    events.append(e_norm1)
+
+    # Malicious login
+    e_bad_login = Event(
+        event_id=_uid("EVT_ATO_E_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time + timedelta(minutes=1),
+        event_type=EventType.LOGIN,
+        device_id=bad_dev,
+        session_id=_uid("SES_BAD_"),
+        ip_address=bad_ip,
+        country="DE",
+        asn="AS24940",
+        metadata={"generated": True, "scenario": "ato_stealth_mixed"},
+    )
+    events.append(e_bad_login)
+    event_ids.append(e_bad_login.event_id)
+
+    # Malicious API harvest
+    for i in range(4):
+        e_harv = Event(
+            event_id=_uid("EVT_ATO_E_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=attack_time + timedelta(minutes=1, seconds=20 + i * 8),
+            event_type=EventType.API_REQUEST,
+            device_id=bad_dev,
+            ip_address=bad_ip,
+            country="DE",
+            asn="AS24940",
+            endpoint="/api/users",
+            action="list_users",
+            metadata={"generated": True, "scenario": "ato_stealth_mixed"},
+        )
+        events.append(e_harv)
+        event_ids.append(e_harv.event_id)
+
+    # Another normal customer payment
+    e_norm2 = Event(
+        event_id=_uid("EVT_NORM_"),
+        merchant_id=merchant.merchant_id,
+        timestamp=attack_time + timedelta(minutes=2),
+        event_type=EventType.TRANSACTION,
+        device_id=known_devs[0],
+        ip_address=known_ips[known_devs[0]][0],
+        country="IN",
+        amount=round(arch["txn_amount_mean"] * 1.2, 2),
+        currency="INR",
+        metadata={"generated": True, "scenario": "stealth_mixed", "legitimate": True},
+    )
+    events.append(e_norm2)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="ATO_CASE_E_STEALTH_MIXED",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=attack_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="attack",
+    )
+    return events, scenario
+
+
+def inject_benign_festive_spike(
+    merchant: Merchant,
+    spike_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Benign Case 1: Festival / Diwali Promotional Campaign.
+    Massive 8x transaction volume surge from 100% verified merchant devices and domestic geography.
+    """
+    if spike_time is None:
+        spike_time = datetime.now(timezone.utc)
+    arch = ARCHETYPES[merchant.merchant_type]
+    devices = _generate_devices(merchant.merchant_id, arch)
+    device_ips = _generate_ips(merchant.merchant_id, arch, devices)
+    events, event_ids = [], []
+
+    for i in range(35):
+        dev = _rng.choice(devices)
+        ip = _rng.choice(device_ips[dev])
+        e = Event(
+            event_id=_uid("EVT_FEST_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=spike_time + timedelta(minutes=i * 1, seconds=_rng.randint(0, 50)),
+            event_type=EventType.TRANSACTION,
+            device_id=dev,
+            session_id=_uid("SES_FEST_"),
+            ip_address=ip,
+            country="IN",
+            asn=arch["asns"][0],
+            amount=round(max(100, _rng.gauss(arch["txn_amount_mean"], arch["txn_amount_std"])), 2),
+            currency="INR",
+            payment_method=_rng.choice(["upi", "card", "netbanking"]),
+            metadata={"generated": True, "scenario": "festive_campaign", "campaign": "DIWALI_BONANZA"},
+        )
+        events.append(e)
+        event_ids.append(e.event_id)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="BENIGN_FESTIVE_SPIKE",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=spike_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="benign",
+    )
+    return events, scenario
+
+
+def inject_benign_weekend_surge(
+    merchant: Merchant,
+    surge_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Benign Case 2: Weekend dining/shopping surge at late night hours.
+    Unusual hour (23:30) but verified POS terminal and regular order velocity.
+    """
+    if surge_time is None:
+        surge_time = datetime.now(timezone.utc)
+    arch = ARCHETYPES[merchant.merchant_type]
+    devices = _generate_devices(merchant.merchant_id, arch)
+    device_ips = _generate_ips(merchant.merchant_id, arch, devices)
+    events, event_ids = [], []
+
+    for i in range(18):
+        dev = devices[0]  # Primary POS
+        ip = device_ips[dev][0]
+        e = Event(
+            event_id=_uid("EVT_WKND_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=surge_time + timedelta(minutes=i * 2),
+            event_type=EventType.TRANSACTION,
+            device_id=dev,
+            session_id=_uid("SES_WKND_"),
+            ip_address=ip,
+            country="IN",
+            asn=arch["asns"][0],
+            amount=round(max(80, _rng.gauss(arch["txn_amount_mean"], arch["txn_amount_std"] * 0.8)), 2),
+            currency="INR",
+            payment_method="upi",
+            metadata={"generated": True, "scenario": "weekend_surge"},
+        )
+        events.append(e)
+        event_ids.append(e.event_id)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="BENIGN_WEEKEND_SURGE",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=surge_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="benign",
+    )
+    return events, scenario
+
+
+def inject_benign_api_integration(
+    merchant: Merchant,
+    sync_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Benign Case 3: E-commerce inventory/catalog sync API burst.
+    High API rate from known hosting ASN with valid API key; zero config modifications.
+    """
+    if sync_time is None:
+        sync_time = datetime.now(timezone.utc)
+    arch = ARCHETYPES[merchant.merchant_type]
+    devices = _generate_devices(merchant.merchant_id, arch)
+    device_ips = _generate_ips(merchant.merchant_id, arch, devices)
+    events, event_ids = [], []
+
+    for i in range(20):
+        dev = devices[0]
+        ip = device_ips[dev][0]
+        e = Event(
+            event_id=_uid("EVT_SYNC_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=sync_time + timedelta(seconds=i * 3),
+            event_type=EventType.API_REQUEST,
+            device_id=dev,
+            ip_address=ip,
+            country="IN",
+            asn=arch["asns"][0],
+            endpoint="/api/orders",
+            action="sync_catalog",
+            metadata={"generated": True, "scenario": "api_integration_sync"},
+        )
+        events.append(e)
+        event_ids.append(e.event_id)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="BENIGN_API_INTEGRATION",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=sync_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="benign",
+    )
+    return events, scenario
+
+
+def inject_benign_seasonal_sale(
+    merchant: Merchant,
+    sale_time: Optional[datetime] = None,
+) -> tuple[list[Event], ScenarioMetadata]:
+    """
+    Benign Case 4: Seasonal end-of-season clearance sale.
+    4x transaction volume spike with domestic customers and legitimate API calls.
+    """
+    if sale_time is None:
+        sale_time = datetime.now(timezone.utc)
+    arch = ARCHETYPES[merchant.merchant_type]
+    devices = _generate_devices(merchant.merchant_id, arch)
+    device_ips = _generate_ips(merchant.merchant_id, arch, devices)
+    events, event_ids = [], []
+
+    for i in range(25):
+        dev = _rng.choice(devices)
+        ip = _rng.choice(device_ips[dev])
+        e = Event(
+            event_id=_uid("EVT_SEASON_"),
+            merchant_id=merchant.merchant_id,
+            timestamp=sale_time + timedelta(minutes=i * 2, seconds=_rng.randint(0, 50)),
+            event_type=EventType.TRANSACTION,
+            device_id=dev,
+            session_id=_uid("SES_SEASON_"),
+            ip_address=ip,
+            country="IN",
+            asn=arch["asns"][0],
+            amount=round(max(60, _rng.gauss(arch["txn_amount_mean"] * 0.9, arch["txn_amount_std"] * 0.7)), 2),
+            currency="INR",
+            payment_method=_rng.choice(["card", "upi"]),
+            metadata={"generated": True, "scenario": "seasonal_sale", "campaign": "END_OF_SEASON"},
+        )
+        events.append(e)
+        event_ids.append(e.event_id)
+
+    scenario = ScenarioMetadata(
+        scenario_id=_uid("SCN_"),
+        scenario_type="BENIGN_SEASONAL_SALE",
+        merchant_id=merchant.merchant_id,
+        attack_start_time=sale_time,
+        attack_end_time=events[-1].timestamp,
+        injected_event_ids=event_ids,
+        label="benign",
+    )
+    return events, scenario
+
+

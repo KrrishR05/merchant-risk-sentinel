@@ -868,7 +868,7 @@ def save_incident(incident: Incident):
         raise
 
 
-def get_all_incidents(limit: int = 100) -> list[Incident]:
+def get_all_incidents(limit: int = 500) -> list[Incident]:
     conn = get_connection()
     try:
         cur = _execute(conn, "SELECT * FROM incidents ORDER BY created_at DESC LIMIT ?", (limit,))
@@ -898,13 +898,13 @@ def get_incident(incident_id: str) -> Optional[Incident]:
         raise
 
 
-def get_merchant_incidents(merchant_id: str) -> list[Incident]:
+def get_merchant_incidents(merchant_id: str, limit: int = 100) -> list[Incident]:
     conn = get_connection()
     try:
         cur = _execute(
             conn,
-            "SELECT * FROM incidents WHERE merchant_id = ? ORDER BY created_at DESC",
-            (merchant_id,),
+            "SELECT * FROM incidents WHERE merchant_id = ? ORDER BY created_at DESC LIMIT ?",
+            (merchant_id, limit),
         )
         rows = _fetchall_as_dicts(cur, INCIDENT_COLS)
         if DB_TYPE == "postgresql":

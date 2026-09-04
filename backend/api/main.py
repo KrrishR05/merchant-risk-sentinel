@@ -24,10 +24,19 @@ from pydantic import BaseModel, ValidationError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import database as db
-from models.schemas import Event, Incident, IncidentStatus, RiskBand
+from models.schemas import (
+    ActionExecutionRequest,
+    ActionExecutionResult,
+    DefensiveAction,
+    Event,
+    Incident,
+    IncidentStatus,
+    RiskBand,
+)
 from investigator.agent import RiskSutraAIInvestigator
 from investigator.audit import persist_investigation, retrieve_audit, retrieve_investigation
 from investigator.memory import ensure_foundational_memory_seeded
+from services.policy_gate import PolicyGate
 from services.risk_orchestrator import (
     get_graph_clusters,
     get_merchant_profile,
@@ -66,6 +75,16 @@ app.add_middleware(
 def startup():
     logger.info("Initializing RiskSūtra database...")
     db.init_db()
+    existing_merchants = db.get_all_merchants()
+    if not existing_merchants:
+        logger.info("No merchants found in database. Auto-seeding canonical 5 merchants with baseline history...")
+        from services.synthetic_generator import generate_merchants, generate_normal_events
+        merchants = generate_merchants()
+        for m in merchants:
+            db.save_merchant(m)
+            events = generate_normal_events(m, days=14)
+            db.save_events_bulk(events)
+        logger.info(f"Successfully seeded {len(merchants)} merchants with 14 days of baseline telemetry.")
     ensure_foundational_memory_seeded()
     logger.info("RiskSūtra API ready with historical memory loaded")
 
@@ -261,9 +280,22 @@ def get_timeline(
 # ──────────────────────────────────────────────
 
 @app.get("/incidents")
-def list_incidents(limit: int = Query(default=50, le=200)):
+def list_incidents(limit: int = Query(default=200, le=1000)):
     incidents = db.get_all_incidents(limit=limit)
     return {"incidents": [i.model_dump() for i in incidents]}
+
+
+@app.get("/merchants/{merchant_id}/incidents")
+def get_merchant_incidents(
+    merchant_id: str,
+    limit: int = Query(default=50, le=200),
+):
+    """Retrieve historical incidents scoped to a specific merchant."""
+    merchant = db.get_merchant(merchant_id)
+    if not merchant:
+        raise HTTPException(status_code=404, detail=f"Merchant {merchant_id} not found")
+    incidents = db.get_merchant_incidents(merchant_id, limit=limit)
+    return {"merchant_id": merchant_id, "incidents": [i.model_dump() for i in incidents]}
 
 
 @app.get("/incidents/{incident_id}")
@@ -372,6 +404,28 @@ def update_incident_status_endpoint(incident_id: str, req: UpdateStatusRequest):
         raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
     updated = db.update_incident_status(incident_id, req.status.value)
     return {"incident_id": incident_id, "status": req.status.value, "updated": updated}
+
+
+@app.get("/incidents/{incident_id}/actions/allowed")
+def get_allowed_defensive_actions(incident_id: str):
+    """Retrieve allowed bounded defense-only actions permitted for this incident."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    inv = retrieve_investigation(incident_id)
+    verdict = inv.assessment if inv else None
+    allowed = PolicyGate.get_allowed_actions(incident, latest_verdict=verdict)
+    return {"incident_id": incident_id, "risk_band": incident.risk_band.value, "allowed_actions": allowed}
+
+
+@app.post("/incidents/{incident_id}/actions/execute")
+def execute_defensive_action(incident_id: str, req: ActionExecutionRequest):
+    """Execute an authorized, bounded defensive action through the RiskSūtra Policy Gate."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    result = PolicyGate.evaluate_and_execute(incident_id, req)
+    return result.model_dump()
 
 
 class AnalystFeedbackRequest(BaseModel):

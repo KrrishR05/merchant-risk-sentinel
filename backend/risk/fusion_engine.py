@@ -81,7 +81,16 @@ def compute_risk_assessment(
     attack_chain = []
     if workflow_result and workflow_result.matched_patterns:
         attack_chain = workflow_result.matched_patterns
-        if "CONTROL_PLANE_TAKEOVER_CHAIN" in matched_patterns_set(workflow_result) or "NEW_DEVICE_TO_SENSITIVE_ACTION" in matched_patterns_set(workflow_result):
+        critical_patterns = {
+            "CONTROL_PLANE_TAKEOVER_CHAIN",
+            "NEW_DEVICE_TO_SENSITIVE_ACTION",
+            "SUSPICIOUS_GEO_VELOCITY_SEQUENCE",
+            "AUTH_BRUTEFORCE_CHAIN",
+            "STEALTH_INTERLEAVED_ATO",
+            "GEO_DEVIATION_API_BURST",
+            "API_BURST_TO_PAYOUT_CHANGE",
+        }
+        if matched_patterns_set(workflow_result) & critical_patterns:
             combined_raw = max(combined_raw, 0.75)
 
     # 5. Apply Graph Abuse Cluster risk
