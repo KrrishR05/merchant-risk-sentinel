@@ -6,6 +6,8 @@ These tools interact safely with the deterministic risk engines and database rep
 enforcing strict input validation, size bounding, and error resilience.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any, Dict, List, Optional
 from db import database as db
@@ -225,6 +227,40 @@ class InvestigatorTools:
             logger.error(f"Error in compare_with_merchant_baseline: {e}")
             return {"error": f"Failed to compare baseline: {str(e)}"}
 
+    @staticmethod
+    def search_historical_case_memory(
+        incident_id: str,
+        merchant_type: str = "RESTAURANT",
+        top_signals: Optional[List[Dict[str, Any]]] = None,
+        has_config_change: bool = False,
+        has_new_device: bool = False,
+        has_geo_dev: bool = False,
+        has_txn_anomaly: bool = False,
+        has_cluster: bool = False,
+    ) -> Dict[str, Any]:
+        """Query persistent case memory for structurally similar past security incidents."""
+        try:
+            from investigator.memory import search_historical_cases
+            matches, summary, learning = search_historical_cases(
+                incident_id=incident_id,
+                merchant_type=merchant_type,
+                top_signals=top_signals or [],
+                has_config_change=has_config_change,
+                has_new_device=has_new_device,
+                has_geo_dev=has_geo_dev,
+                has_txn_anomaly=has_txn_anomaly,
+                has_cluster=has_cluster,
+            )
+            return {
+                "incident_id": incident_id,
+                "historical_matches": [m.model_dump() for m in matches],
+                "historical_pattern_summary": summary,
+                "learning_intelligence": learning.model_dump(),
+            }
+        except Exception as e:
+            logger.error(f"Error in search_historical_case_memory: {e}")
+            return {"error": f"Failed to query case memory: {str(e)}"}
+
 
 AVAILABLE_TOOLS = {
     "get_incident_context": InvestigatorTools.get_incident_context,
@@ -237,4 +273,5 @@ AVAILABLE_TOOLS = {
     "get_related_incidents": InvestigatorTools.get_related_incidents,
     "get_transaction_context": InvestigatorTools.get_transaction_context,
     "compare_with_merchant_baseline": InvestigatorTools.compare_with_merchant_baseline,
+    "search_historical_case_memory": InvestigatorTools.search_historical_case_memory,
 }

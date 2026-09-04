@@ -10,12 +10,30 @@ Controlled by DB_TYPE environment variable:
 Repository-pattern abstraction so callers never know which backend is active.
 """
 
+from __future__ import annotations
+
 import json
+import logging
 import os
 import sqlite3
-import logging
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from models.schemas import (
+    AIInvestigationResult,
+    Event,
+    EventType,
+    HistoricalMemoryRecord,
+    Incident,
+    IncidentStatus,
+    InvestigationAuditRecord,
+    Merchant,
+    MerchantProfile,
+    MerchantType,
+    RiskBand,
+    RiskSignal,
+    Severity,
+)
 
 logger = logging.getLogger("risksutra.db")
 
@@ -144,14 +162,16 @@ CREATE TABLE IF NOT EXISTS incidents (
     risk_band TEXT NOT NULL,
     signal_ids JSONB DEFAULT '[]',
     evidence_event_ids JSONB DEFAULT '[]',
-    summary TEXT DEFAULT ''
+    summary TEXT DEFAULT '',
+    evidence_version INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS ai_investigations (
     incident_id TEXT PRIMARY KEY,
     merchant_id TEXT NOT NULL REFERENCES merchants(merchant_id),
     result_json JSONB NOT NULL,
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP NOT NULL,
+    evidence_version INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS ai_investigation_audits (
@@ -159,6 +179,19 @@ CREATE TABLE IF NOT EXISTS ai_investigation_audits (
     incident_id TEXT NOT NULL REFERENCES incidents(incident_id),
     merchant_id TEXT NOT NULL REFERENCES merchants(merchant_id),
     audit_json JSONB NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    evidence_version INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS case_memory (
+    memory_id TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    merchant_type TEXT NOT NULL,
+    incident_type TEXT NOT NULL,
+    risk_band TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    record_json JSONB NOT NULL,
     created_at TIMESTAMP NOT NULL
 );
 
@@ -167,6 +200,8 @@ CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_merchant_ts ON events(merchant_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_signals_merchant ON risk_signals(merchant_id);
 CREATE INDEX IF NOT EXISTS idx_incidents_merchant ON incidents(merchant_id);
+CREATE INDEX IF NOT EXISTS idx_case_memory_incident ON case_memory(incident_id);
+CREATE INDEX IF NOT EXISTS idx_case_memory_merchant ON case_memory(merchant_id);
 """
 
 _SQLITE_SCHEMA = """
@@ -243,7 +278,20 @@ CREATE TABLE IF NOT EXISTS ai_investigation_audits (
     merchant_id TEXT NOT NULL,
     audit_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    evidence_version INTEGER DEFAULT 1,
     FOREIGN KEY (merchant_id) REFERENCES merchants(merchant_id)
+);
+
+CREATE TABLE IF NOT EXISTS case_memory (
+    memory_id TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    merchant_type TEXT NOT NULL,
+    incident_type TEXT NOT NULL,
+    risk_band TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_merchant ON events(merchant_id);
@@ -251,11 +299,51 @@ CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_merchant_ts ON events(merchant_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_signals_merchant ON risk_signals(merchant_id);
 CREATE INDEX IF NOT EXISTS idx_incidents_merchant ON incidents(merchant_id);
+CREATE INDEX IF NOT EXISTS idx_case_memory_incident ON case_memory(incident_id);
+CREATE INDEX IF NOT EXISTS idx_case_memory_merchant ON case_memory(merchant_id);
 """
 
 
+def _migrate_db(conn):
+    """Ensure existing databases have all required columns and tables."""
+    if DB_TYPE == "sqlite":
+        try:
+            # check ai_investigations
+            cursor = conn.execute("PRAGMA table_info(ai_investigations)")
+            cols = [r[1] for r in cursor.fetchall()]
+            if cols and "evidence_version" not in cols:
+                conn.execute("ALTER TABLE ai_investigations ADD COLUMN evidence_version INTEGER DEFAULT 1")
+
+            # check incidents
+            cursor = conn.execute("PRAGMA table_info(incidents)")
+            cols = [r[1] for r in cursor.fetchall()]
+            if cols and "evidence_version" not in cols:
+                conn.execute("ALTER TABLE incidents ADD COLUMN evidence_version INTEGER DEFAULT 1")
+
+            # check ai_investigation_audits
+            cursor = conn.execute("PRAGMA table_info(ai_investigation_audits)")
+            cols = [r[1] for r in cursor.fetchall()]
+            if cols and "evidence_version" not in cols:
+                conn.execute("ALTER TABLE ai_investigation_audits ADD COLUMN evidence_version INTEGER DEFAULT 1")
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"SQLite migration check notice: {e}")
+    elif DB_TYPE == "postgresql":
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE ai_investigations ADD COLUMN IF NOT EXISTS evidence_version INTEGER DEFAULT 1")
+            cur.execute("ALTER TABLE incidents ADD COLUMN IF NOT EXISTS evidence_version INTEGER DEFAULT 1")
+            cur.execute("ALTER TABLE ai_investigation_audits ADD COLUMN IF NOT EXISTS evidence_version INTEGER DEFAULT 1")
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"PostgreSQL migration notice: {e}")
+        finally:
+            cur.close()
+
+
 def init_db():
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist and run migrations."""
     conn = get_connection()
     try:
         if DB_TYPE == "postgresql":
@@ -263,10 +351,12 @@ def init_db():
             cur.execute(_PG_SCHEMA)
             conn.commit()
             cur.close()
+            _migrate_db(conn)
             logger.info("PostgreSQL database initialized")
         else:
             conn.executescript(_SQLITE_SCHEMA)
             conn.commit()
+            _migrate_db(conn)
             logger.info("SQLite database initialized")
     finally:
         conn.close()
@@ -335,14 +425,7 @@ def _from_json_field(value):
     return json.loads(value)
 
 
-# ──────────────────────────────────────────────
-# Imports for schema types
-# ──────────────────────────────────────────────
 
-from models.schemas import (
-    Event, EventType, Incident, IncidentStatus, Merchant, MerchantProfile,
-    MerchantType, RiskBand, RiskSignal, Severity, AIInvestigationResult, InvestigationAuditRecord,
-)
 
 MERCHANT_COLS = ["merchant_id", "merchant_name", "merchant_type", "country", "created_at", "profile_metadata"]
 EVENT_COLS = [
@@ -436,6 +519,8 @@ def _dict_to_merchant(d: dict) -> Merchant:
     created_at = d["created_at"]
     if isinstance(created_at, str):
         created_at = datetime.fromisoformat(created_at)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
     return Merchant(
         merchant_id=d["merchant_id"],
         merchant_name=d["merchant_name"],
@@ -612,6 +697,8 @@ def _dict_to_event(d: dict) -> Event:
     ts = d["timestamp"]
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
     return Event(
         event_id=d["event_id"],
         merchant_id=d["merchant_id"],
@@ -725,6 +812,8 @@ def _dict_to_signal(d: dict) -> RiskSignal:
     ts = d["timestamp"]
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
     return RiskSignal(
         signal_id=d["signal_id"],
         merchant_id=d["merchant_id"],
@@ -766,7 +855,9 @@ def save_incident(incident: Incident):
             cur.close()
         else:
             conn.execute(
-                "INSERT OR REPLACE INTO incidents VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT OR REPLACE INTO incidents (incident_id, merchant_id, created_at, status, incident_type,
+                   risk_score, risk_band, signal_ids, evidence_event_ids, summary, evidence_version)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (incident.incident_id, incident.merchant_id, ts, incident.status.value,
                  incident.incident_type, incident.risk_score, incident.risk_band.value,
                  sigs, evidence, incident.summary, ev_ver),
@@ -829,6 +920,8 @@ def _dict_to_incident(d: dict) -> Incident:
     ts = d["created_at"]
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
     return Incident(
         incident_id=d["incident_id"],
         merchant_id=d["merchant_id"],
@@ -867,7 +960,8 @@ def save_investigation_result(result: AIInvestigationResult, merchant_id: str):
             cur.close()
         else:
             conn.execute(
-                "INSERT OR REPLACE INTO ai_investigations VALUES (?, ?, ?, ?, ?)",
+                """INSERT OR REPLACE INTO ai_investigations (incident_id, merchant_id, result_json, created_at, evidence_version)
+                   VALUES (?, ?, ?, ?, ?)""",
                 (result.incident_id, merchant_id, res_json, ts, ev_ver),
             )
         _commit_and_close(conn)
@@ -899,21 +993,23 @@ def save_investigation_audit(audit: InvestigationAuditRecord):
     try:
         ts = audit.start_time.isoformat()
         audit_json = json.dumps(audit.model_dump(), default=str)
+        ev_ver = getattr(audit, "evidence_version", 1)
 
         if DB_TYPE == "postgresql":
             cur = conn.cursor()
             cur.execute(
-                """INSERT INTO ai_investigation_audits (audit_id, incident_id, merchant_id, audit_json, created_at)
-                   VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO ai_investigation_audits (audit_id, incident_id, merchant_id, audit_json, created_at, evidence_version)
+                   VALUES (%s, %s, %s, %s, %s, %s)
                    ON CONFLICT (audit_id) DO UPDATE SET
-                     audit_json = EXCLUDED.audit_json""",
-                (audit.audit_id, audit.incident_id, audit.merchant_id, audit_json, audit.start_time),
+                     audit_json = EXCLUDED.audit_json, evidence_version = EXCLUDED.evidence_version""",
+                (audit.audit_id, audit.incident_id, audit.merchant_id, audit_json, audit.start_time, ev_ver),
             )
             cur.close()
         else:
             conn.execute(
-                "INSERT OR REPLACE INTO ai_investigation_audits VALUES (?, ?, ?, ?, ?)",
-                (audit.audit_id, audit.incident_id, audit.merchant_id, audit_json, ts),
+                """INSERT OR REPLACE INTO ai_investigation_audits (audit_id, incident_id, merchant_id, audit_json, created_at, evidence_version)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (audit.audit_id, audit.incident_id, audit.merchant_id, audit_json, ts, ev_ver),
             )
         _commit_and_close(conn)
     except Exception:
@@ -938,6 +1034,101 @@ def get_investigation_audit(incident_id: str) -> Optional[InvestigationAuditReco
         raw_val = row["audit_json"] if isinstance(row, sqlite3.Row) else row[0]
         data = json.loads(raw_val) if isinstance(raw_val, str) else raw_val
         return InvestigationAuditRecord(**data)
+    except Exception:
+        conn.close()
+        raise
+
+
+def update_incident_status(incident_id: str, status: Union[IncidentStatus, str]) -> bool:
+    """Update lifecycle status of an incident."""
+    status_str = status.value if hasattr(status, "value") else str(status)
+    conn = get_connection()
+    try:
+        _execute(conn, "UPDATE incidents SET status = ? WHERE incident_id = ?", (status_str, incident_id))
+        _commit_and_close(conn)
+        return True
+    except Exception:
+        conn.close()
+        raise
+
+
+# ──────────────────────────────────────────────
+# Historical Case Memory Repository
+# ──────────────────────────────────────────────
+
+def save_case_memory(record: HistoricalMemoryRecord):
+    """Persist historical case memory record."""
+    conn = get_connection()
+    try:
+        ts = record.created_at if DB_TYPE == "postgresql" else record.created_at.isoformat()
+        rec_json = json.dumps(record.model_dump(), default=str)
+
+        if DB_TYPE == "postgresql":
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO case_memory (memory_id, incident_id, merchant_id, merchant_type, incident_type,
+                   risk_band, outcome, record_json, created_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (memory_id) DO UPDATE SET
+                     record_json = EXCLUDED.record_json, outcome = EXCLUDED.outcome""",
+                (record.memory_id, record.incident_id, record.merchant_id, record.merchant_type,
+                 record.incident_type, record.risk_band, record.outcome, rec_json, ts),
+            )
+            cur.close()
+        else:
+            conn.execute(
+                """INSERT OR REPLACE INTO case_memory (memory_id, incident_id, merchant_id, merchant_type, incident_type,
+                   risk_band, outcome, record_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (record.memory_id, record.incident_id, record.merchant_id, record.merchant_type,
+                 record.incident_type, record.risk_band, record.outcome, rec_json, ts),
+            )
+        _commit_and_close(conn)
+    except Exception:
+        conn.close()
+        raise
+
+
+def get_all_case_memories(exclude_incident_id: Optional[str] = None) -> list[HistoricalMemoryRecord]:
+    """Retrieve historical case memories, excluding current ongoing incident to avoid self-contamination."""
+    conn = get_connection()
+    try:
+        if exclude_incident_id:
+            cur = _execute(conn, "SELECT record_json FROM case_memory WHERE incident_id != ? ORDER BY created_at DESC", (exclude_incident_id,))
+        else:
+            cur = _execute(conn, "SELECT record_json FROM case_memory ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        if DB_TYPE == "postgresql":
+            cur.close()
+        conn.close()
+        records = []
+        for r in rows:
+            raw_val = r["record_json"] if isinstance(r, sqlite3.Row) else r[0]
+            data = json.loads(raw_val) if isinstance(raw_val, str) else raw_val
+            records.append(HistoricalMemoryRecord(**data))
+        return records
+    except Exception:
+        conn.close()
+        raise
+
+
+def save_analyst_feedback(incident_id: str, outcome: str, notes: str = "", merchant_id: Optional[str] = None, analyst_id: Optional[str] = None) -> bool:
+    """Record analyst verification/feedback to calibrate learning data."""
+    conn = get_connection()
+    try:
+        cur = _execute(conn, "SELECT record_json FROM case_memory WHERE incident_id = ?", (incident_id,))
+        row = cur.fetchone()
+        if row:
+            raw_val = row["record_json"] if isinstance(row, sqlite3.Row) else row[0]
+            data = json.loads(raw_val) if isinstance(raw_val, str) else raw_val
+            data["outcome"] = outcome
+            data["resolution_status"] = "RESOLVED" if outcome in ("CONFIRMED_ATO", "LEGITIMATE_SPIKE", "FALSE_POSITIVE") else "OPEN"
+            if notes:
+                data.setdefault("remediation_applied", []).append(f"Analyst note: {notes}")
+            rec = HistoricalMemoryRecord(**data)
+            save_case_memory(rec)
+        _commit_and_close(conn)
+        return True
     except Exception:
         conn.close()
         raise

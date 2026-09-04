@@ -4,6 +4,8 @@ RiskSūtra — Investigation Audit Service
 Saves and fetches investigation results and decision audit records.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Optional, Tuple
 from db import database as db

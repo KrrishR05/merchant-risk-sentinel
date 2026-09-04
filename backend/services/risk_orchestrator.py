@@ -11,9 +11,11 @@ Orchestrates the full multi-engine merchant risk detection pipeline:
 7. Composite Risk Fusion & Incident Dispatching
 """
 
+from __future__ import annotations
+
 import logging
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from db import database as db
 from graph.abuse_sentinel import GraphService
@@ -34,6 +36,12 @@ logger = logging.getLogger("risksutra.orchestrator")
 _workflow_engine = WorkflowIntegrityEngine()
 _fraud_spike_detector = FraudSpikeDetector()
 _graph_service = GraphService()
+
+
+def _to_utc(dt: datetime) -> datetime:
+    if dt is None:
+        return datetime.now(timezone.utc)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 def ingest_event(event: Event) -> dict:
@@ -58,7 +66,8 @@ def ingest_event(event: Event) -> dict:
     profile = build_merchant_profile(event.merchant_id, historical_events)
 
     # 4. Compute deviation signals for current event window
-    recent_events = [e for e in historical_events if (event.timestamp - e.timestamp).total_seconds() <= 3600]
+    ev_ts = _to_utc(event.timestamp)
+    recent_events = [e for e in historical_events if (ev_ts - _to_utc(e.timestamp)).total_seconds() <= 3600]
     if not recent_events:
         recent_events = [event]
 
@@ -116,9 +125,6 @@ def ingest_events_batch(events: list[Event]) -> dict:
 
     inserted = db.save_events_bulk(events)
     _graph_service.build_graph_from_events(events)
-
-    def _to_utc(dt):
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
     all_events = db.get_merchant_events(merchant_id)
     batch_start = min(_to_utc(e.timestamp) for e in events)

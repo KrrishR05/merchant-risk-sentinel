@@ -14,6 +14,8 @@ Tests for:
 10. MockProvider execution without external API keys
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import pytest
@@ -47,15 +49,21 @@ TEST_DB_PATH = os.path.join(os.path.dirname(__file__), "test_investigator_risksu
 @pytest.fixture(autouse=True)
 def setup_test_db():
     """Fresh test database fixture."""
-    if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
+    try:
+        if os.path.exists(TEST_DB_PATH):
+            os.remove(TEST_DB_PATH)
+    except Exception:
+        pass
     db.DB_TYPE = "sqlite"
     db.DB_PATH = TEST_DB_PATH
     db.SQLITE_PATH = TEST_DB_PATH
     db.init_db()
     yield
-    if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
+    try:
+        if os.path.exists(TEST_DB_PATH):
+            os.remove(TEST_DB_PATH)
+    except Exception:
+        pass
 
 
 @pytest.fixture
@@ -421,6 +429,141 @@ class TestManualTriggerLifecycle:
         assert res_cfg.incident_id == "INC_cfg_only"
 
 
+# ──────────────────────────────────────────────
+# 9. Historical Case Memory & Similarity Isolation
+# ──────────────────────────────────────────────
+
+class TestHistoricalMemoryAndLearningLoop:
+    def test_foundational_memory_seeding(self):
+        from investigator.memory import ensure_foundational_memory_seeded
+        ensure_foundational_memory_seeded()
+        memories = db.get_all_case_memories()
+        assert len(memories) >= 5, "Foundational historical cases must be present in case memory"
+        incident_ids = [m.incident_id for m in memories]
+        assert "INC_HIST_ATO_01" in incident_ids
+        assert "INC_HIST_LEG_01" in incident_ids
+
+    def test_no_self_contamination_in_historical_memory(self, sample_merchant):
+        from investigator.memory import search_historical_cases
+        inc_id = "INC_test_isolate_01"
+        inc = Incident(
+            incident_id=inc_id,
+            merchant_id=sample_merchant.merchant_id,
+            risk_score=82.0,
+            risk_band=RiskBand.CRITICAL,
+            summary="Isolation test",
+        )
+        db.save_incident(inc)
+
+        matches, summary, learning = search_historical_cases(
+            incident_id=inc_id,
+            merchant_type="SAAS",
+            top_signals=[{"signal_type": "NEW_DEVICE"}, {"signal_type": "SENSITIVE_CONFIG_CHANGE"}],
+            has_config_change=True,
+            has_new_device=True,
+            has_geo_dev=False,
+            has_txn_anomaly=True,
+            has_cluster=False,
+        )
+
+        matched_ids = [m.incident_id for m in matches]
+        assert inc_id not in matched_ids, "Current incident being investigated must NEVER match itself (no self-contamination)"
+        assert len(matches) > 0, "Should retrieve relevant prior historical cases"
+        assert learning.historical_cases_analyzed >= 5
+
+    def test_analyst_feedback_loop_updates_case_memory(self, sample_merchant):
+        inc_id = "INC_feedback_test"
+        inc = Incident(
+            incident_id=inc_id,
+            merchant_id=sample_merchant.merchant_id,
+            risk_score=75.0,
+            risk_band=RiskBand.HIGH,
+            summary="Feedback calibration incident",
+        )
+        db.save_incident(inc)
+
+        investigator = RiskSutraAIInvestigator(provider=MockProvider())
+        investigator.investigate_incident(inc_id)
+
+        # Analyst reviews and confirms false positive
+        updated = db.save_analyst_feedback(
+            incident_id=inc_id,
+            outcome="FALSE_POSITIVE",
+            notes="Authorized executive travel",
+            analyst_id="sec-analyst-99"
+        )
+        assert updated is True
+
+        # Check updated memory record
+        all_mem = db.get_all_case_memories()
+        target = next((m for m in all_mem if m.incident_id == inc_id), None)
+        assert target is not None
+        assert target.outcome == "FALSE_POSITIVE"
+
+
+# ──────────────────────────────────────────────
+# 10. Incident Lifecycle & Resolution Plan Tests
+# ──────────────────────────────────────────────
+
+class TestLifecycleAndResolutionPlan:
+    def test_incident_lifecycle_transitions(self, sample_merchant):
+        inc_id = "INC_lifecycle_01"
+        inc = Incident(
+            incident_id=inc_id,
+            merchant_id=sample_merchant.merchant_id,
+            risk_score=80.0,
+            risk_band=RiskBand.HIGH,
+            status=IncidentStatus.OPEN,
+            summary="Lifecycle test",
+        )
+        db.save_incident(inc)
+
+        # Transition to CONTAINED
+        db.update_incident_status(inc_id, IncidentStatus.CONTAINED)
+        saved = db.get_incident(inc_id)
+        assert saved.status == IncidentStatus.CONTAINED
+
+        # Transition to RECOVERING
+        db.update_incident_status(inc_id, IncidentStatus.RECOVERING)
+        saved = db.get_incident(inc_id)
+        assert saved.status == IncidentStatus.RECOVERING
+
+        # Transition to RESOLVED
+        db.update_incident_status(inc_id, IncidentStatus.RESOLVED)
+        saved = db.get_incident(inc_id)
+        assert saved.status == IncidentStatus.RESOLVED
+
+    def test_resolution_plan_and_forensic_grounding(self, sample_merchant):
+        base_events = generate_normal_events(sample_merchant, days=5)
+        db.save_events_bulk(base_events)
+        ato_events, _ = inject_ato_credential_theft(sample_merchant)
+        res = ingest_events_batch(ato_events)
+        inc = res.get("incident_created")
+        if not inc:
+            inc = Incident(
+                incident_id="INC_res_plan_test",
+                merchant_id=sample_merchant.merchant_id,
+                risk_score=85.0,
+                risk_band=RiskBand.CRITICAL,
+                summary="Forensic test incident",
+                evidence_event_ids=[e.event_id for e in ato_events],
+            )
+            db.save_incident(inc)
+
+        investigator = RiskSutraAIInvestigator(provider=MockProvider())
+        out = investigator.investigate_incident(inc.incident_id)
+        result: AIInvestigationResult = out["result"]
+
+        assert result.immediate_actions is not None and len(result.immediate_actions) > 0
+        assert result.containment_actions is not None and len(result.containment_actions) > 0
+        assert result.recovery_actions is not None and len(result.recovery_actions) > 0
+        assert result.resolution_conditions is not None and len(result.resolution_conditions) > 0
+        assert result.estimated_resolution_window != ""
+        assert result.monitoring_requirements is not None and len(result.monitoring_requirements) > 0
+        assert result.evidence_version == inc.evidence_version
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 

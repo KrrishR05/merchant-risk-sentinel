@@ -6,12 +6,14 @@ Handles event ingestion, merchant behavioral genome queries, temporal workflow a
 fraud spike detection, syndicate graph abuse clusters, and incident management.
 """
 
+from __future__ import annotations
+
 import logging
-import sys
 import os
+import sys
 import traceback
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,9 +24,10 @@ from pydantic import BaseModel, ValidationError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import database as db
-from models.schemas import Event, Merchant, RiskBand
+from models.schemas import Event, Incident, IncidentStatus, RiskBand
 from investigator.agent import RiskSutraAIInvestigator
 from investigator.audit import persist_investigation, retrieve_audit, retrieve_investigation
+from investigator.memory import ensure_foundational_memory_seeded
 from services.risk_orchestrator import (
     get_graph_clusters,
     get_merchant_profile,
@@ -34,8 +37,6 @@ from services.risk_orchestrator import (
     ingest_events_batch,
 )
 from services.synthetic_generator import (
-    generate_merchants,
-    generate_normal_events,
     inject_ato_credential_theft,
     inject_legitimate_spike,
 )
@@ -65,7 +66,10 @@ app.add_middleware(
 def startup():
     logger.info("Initializing RiskSūtra database...")
     db.init_db()
-    logger.info("RiskSūtra API ready")
+    ensure_foundational_memory_seeded()
+    logger.info("RiskSūtra API ready with historical memory loaded")
+
+
 
 
 # ──────────────────────────────────────────────
@@ -355,6 +359,51 @@ def get_investigation_audit(incident_id: str):
     return audit.model_dump()
 
 
+class UpdateStatusRequest(BaseModel):
+    status: IncidentStatus
+    notes: Optional[str] = None
+
+
+@app.post("/incidents/{incident_id}/status")
+def update_incident_status_endpoint(incident_id: str, req: UpdateStatusRequest):
+    """Update incident lifecycle status (OPEN -> INVESTIGATING -> CONTAINED -> RECOVERING -> RESOLVED)."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    updated = db.update_incident_status(incident_id, req.status.value)
+    return {"incident_id": incident_id, "status": req.status.value, "updated": updated}
+
+
+class AnalystFeedbackRequest(BaseModel):
+    analyst_id: str = "analyst-1"
+    outcome: str  # "confirmed_threat", "false_positive", "legitimate_event", "resolved"
+    notes: Optional[str] = None
+
+
+@app.post("/incidents/{incident_id}/feedback")
+def submit_analyst_feedback(incident_id: str, req: AnalystFeedbackRequest):
+    """Submit analyst outcome feedback to close the learning loop and calibrate future investigation memory."""
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    saved = db.save_analyst_feedback(
+        incident_id=incident_id,
+        merchant_id=incident.merchant_id,
+        outcome=req.outcome,
+        notes=req.notes or "",
+        analyst_id=req.analyst_id,
+    )
+    return {"incident_id": incident_id, "feedback_recorded": saved}
+
+
+@app.get("/cases/memory")
+def list_case_memory(exclude_incident_id: Optional[str] = None):
+    """Retrieve historical case memories for intelligence and learning evaluation."""
+    memories = db.get_all_case_memories(exclude_incident_id=exclude_incident_id)
+    return {"case_memories": [m.model_dump() for m in memories], "count": len(memories)}
+
+
+
 # ──────────────────────────────────────────────
 # Graph & Analytics
 # ──────────────────────────────────────────────
@@ -378,7 +427,7 @@ def get_risk_analytics():
     return {
         "total_merchants": len(merchants),
         "total_incidents": len(incidents),
-        "active_incidents": len([i for i in incidents if i.status.value == "OPEN"]),
+        "active_incidents": len([i for i in incidents if (i.status.value if hasattr(i.status, "value") else str(i.status)) == "OPEN"]),
         "high_risk_merchants_count": len(high_risk),
         "risk_distribution": {
             "LOW": len([a for a in assessments if a.risk_band == RiskBand.LOW]),
@@ -479,7 +528,7 @@ def get_overview():
     return {
         "total_merchants": len(merchants),
         "total_incidents": len(incidents),
-        "active_incidents": len([i for i in incidents if i.status.value == "OPEN"]),
+        "active_incidents": len([i for i in incidents if (i.status.value if hasattr(i.status, "value") else str(i.status)) == "OPEN"]),
         "merchant_risks": merchant_risks,
         "recent_events": [e.model_dump() for e in recent_events[:10]],
         "risk_distribution": {

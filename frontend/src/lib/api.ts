@@ -142,12 +142,37 @@ export interface LegitimateExplanation {
   status: 'SUPPORTED' | 'WEAK' | 'REJECTED';
 }
 
+export interface HistoricalMatch {
+  incident_id: string;
+  merchant_id: string;
+  similarity_percentage: number;
+  outcome: string;
+  pattern: string;
+  resolution: string;
+  relevance_notes: string;
+}
+
+export interface LearningIntelligence {
+  historical_cases_analyzed: number;
+  similar_patterns_found: number;
+  confirmed_ato_matches: number;
+  legitimate_matches: number;
+  pattern_confidence: number;
+  knowledge_sources_used: string[];
+}
+
 export interface AIInvestigationResult {
   incident_id: string;
+  merchant_id?: string;
+  run_id?: string;
   assessment: 'LIKELY_ATO' | 'SUSPICIOUS' | 'INCONCLUSIVE' | 'LIKELY_BENIGN';
   confidence: number;
   summary: string;
+  executive_summary?: string;
+  what_happened?: string;
   why_this_matters: string;
+  why_it_matters?: string;
+  root_cause_hypotheses?: string[];
   attack_progression: AttackStage[];
   key_evidence: KeyEvidenceItem[];
   behavioral_deviation: {
@@ -161,7 +186,17 @@ export interface AIInvestigationResult {
   };
   legitimate_explanations_considered: LegitimateExplanation[];
   contradictions_or_uncertainty: string[];
+  historical_matches?: HistoricalMatch[];
+  historical_pattern_summary?: string;
+  learning_intelligence?: LearningIntelligence;
   recommended_defensive_actions: string[];
+  immediate_actions?: string[];
+  containment_actions?: string[];
+  recovery_actions?: string[];
+  resolution_conditions?: string[];
+  estimated_resolution_window?: string;
+  monitoring_requirements?: string[];
+  analyst_questions?: string[];
   risk_score_reference: number;
   risk_score_source: string;
   evidence_version?: number;
@@ -225,6 +260,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ merchant_id: merchantId, scenario_type: scenarioType }),
     }),
+  // Incident Lifecycle & Learning Loop APIs
+  updateIncidentStatus: (incidentId: string, status: string, notes?: string) =>
+    apiFetch<{ incident_id: string; status: string; updated: boolean }>(`/incidents/${incidentId}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status, notes }),
+    }),
+  submitAnalystFeedback: (incidentId: string, outcome: string, notes?: string, analystId = 'analyst-1') =>
+    apiFetch<{ incident_id: string; feedback_recorded: boolean }>(`/incidents/${incidentId}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({ outcome, notes, analyst_id: analystId }),
+    }),
+  getCaseMemory: (excludeIncidentId?: string) =>
+    apiFetch<{ case_memories: unknown[]; count: number }>(`/cases/memory${excludeIncidentId ? `?exclude_incident_id=${excludeIncidentId}` : ''}`),
   // AI Investigator APIs
   investigateIncident: (incidentId: string) =>
     apiFetch<{ incident_id: string; investigation: AIInvestigationResult; audit: InvestigationAuditRecord }>(
@@ -281,3 +329,4 @@ export const api = {
       .catch(onError);
   },
 };
+

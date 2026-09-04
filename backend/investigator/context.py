@@ -6,8 +6,10 @@ This context encapsulates only verified evidence and deterministic baseline data
 ensuring the AI Investigator works exclusively with grounded factual inputs.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from db import database as db
 from models.schemas import Incident, InvestigationContext, Merchant
 from risk.baseline_engine import build_merchant_profile
@@ -123,6 +125,25 @@ def build_investigation_context(incident_id: str) -> InvestigationContext:
 
     fraud_spike_class = "BENIGN_SALE_SPIKE" if (incident.incident_type == "LEGITIMATE_SPIKE_EVAL" or "Legitimate" in incident.summary) else None
 
+    # Retrieve historical case memory
+    signal_types = [s.get("signal_type", "") for s in top_signals]
+    has_config_change = any("CONFIG" in st or "SENSITIVE" in st or "PAYOUT" in st for st in signal_types)
+    has_new_device = any("DEVICE" in st for st in signal_types)
+    has_geo_dev = any("GEO" in st or "COUNTRY" in st for st in signal_types)
+    has_txn_anomaly = any("TXN" in st or "AMOUNT" in st for st in signal_types)
+
+    from investigator.memory import search_historical_cases
+    hist_matches, hist_summary, _ = search_historical_cases(
+        incident_id=incident.incident_id,
+        merchant_type=merchant_type,
+        top_signals=top_signals,
+        has_config_change=has_config_change,
+        has_new_device=has_new_device,
+        has_geo_dev=has_geo_dev,
+        has_txn_anomaly=has_txn_anomaly,
+        has_cluster=bool(abuse_cluster_info),
+    )
+
     return InvestigationContext(
         incident_id=incident.incident_id,
         merchant_id=incident.merchant_id,
@@ -140,4 +161,6 @@ def build_investigation_context(incident_id: str) -> InvestigationContext:
         fraud_spike_classification=fraud_spike_class,
         abuse_cluster_info=abuse_cluster_info,
         related_incidents_count=related_incidents_count,
+        historical_matches=hist_matches,
+        historical_pattern_summary=hist_summary,
     )
