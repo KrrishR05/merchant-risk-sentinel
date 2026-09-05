@@ -1,0 +1,24 @@
+services:
+  # ─── RiskSūtra Backend (FastAPI + Uvicorn) ─────────────────────
+  - type: web
+    name: risksutra-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+  # ─── RiskSūtra Frontend (Next.js 16) ───────────────────────────
+  - type: web
+    name: risksutra-frontend
+    env: node
+    rootDir: frontend
+    buildCommand: npm run build
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
