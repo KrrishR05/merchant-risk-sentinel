@@ -13,15 +13,18 @@ RiskSūtra detects merchant account takeover by learning merchant-specific behav
 
 ## Screenshots
 
+![RiskSūtra Enterprise Overview](docs/screenshots/01_homepage.png)
+*Executive Overview: RiskSūtra AI Merchant Risk Intelligence platform landing & active defense posture.*
+
 | Security Command Center | Merchant Behavioral Genome |
 | :---: | :---: |
 | ![Security Command Center](docs/screenshots/02_command_center.png) | ![Behavioral Genome](docs/screenshots/03_behavioral_genome.png) |
-| *Real-time risk distribution across monitored merchants* | *14-day baseline vs anomalous telemetry deviations* |
+| *Real-time risk landscape across 5 monitored merchant archetypes* | *Contextual anomaly engine: baseline profile vs active observations* |
 
-| RiskSūtra AI Investigator | False-Positive Cost Evaluation |
+| RiskSūtra AI Investigator | Track 02 Evaluation & Cost Compliance |
 | :---: | :---: |
 | ![AI Investigator](docs/screenshots/04_ai_investigator.png) | ![Cost Evaluation](docs/screenshots/05_cost_evaluation.png) |
-| *10-phase streaming forensic reasoning & temporal chain* | *Quantified operational savings on held-out test set* |
+| *10-phase streaming forensic reasoning & temporal attack chain* | *Quantitative benchmark vs baseline with zero false-positive alerts* |
 
 ---
 
