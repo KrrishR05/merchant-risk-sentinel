@@ -1,0 +1,50 @@
+{
+  "held_out_scenarios_count": 20,
+  "metrics_baseline": {
+    "precision": 0.5,
+    "recall": 1.0,
+    "f1_score": 0.6667,
+    "false_positive_rate": 1.0,
+    "false_positive_count": 10,
+    "false_negative_count": 0,
+    "true_positive_count": 10,
+    "true_negative_count": 0,
+    "detection_lead_time_seconds": 0.0,
+    "attack_chain_recall": 0.0
+  },
+  "metrics_risksutra": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "false_positive_rate": 0.0,
+    "false_positive_count": 0,
+    "false_negative_count": 0,
+    "true_positive_count": 10,
+    "true_negative_count": 10,
+    "detection_lead_time_seconds": 0.0,
+    "attack_chain_recall": 0.7
+  },
+  "cost_baseline": {
+    "fp_count": 10,
+    "fp_unit_cost": 2500.0,
+    "fp_total_cost": 25000.0,
+    "fn_count": 0,
+    "fn_unit_cost": 250000.0,
+    "fn_total_cost": 0.0,
+    "total_expected_cost": 25000.0,
+    "currency": "INR",
+    "assumptions_note": "ASSUMPTION: Model assumes \u20b92,500 per false positive alert (analyst triage & merchant verification friction) and \u20b9250,000 per false negative ATO loss (direct fraud theft, disputes, and recovery expense). These figures are configurable simulation assumptions and do not represent Razorpay proprietary financial data."
+  },
+  "cost_risksutra": {
+    "fp_count": 0,
+    "fp_unit_cost": 2500.0,
+    "fp_total_cost": 0.0,
+    "fn_count": 0,
+    "fn_unit_cost": 250000.0,
+    "fn_total_cost": 0.0,
+    "total_expected_cost": 0.0,
+    "currency": "INR",
+    "assumptions_note": "ASSUMPTION: Model assumes \u20b92,500 per false positive alert (analyst triage & merchant verification friction) and \u20b9250,000 per false negative ATO loss (direct fraud theft, disputes, and recovery expense). These figures are configurable simulation assumptions and do not represent Razorpay proprietary financial data."
+  },
+  "cost_savings": 25000.0
+}

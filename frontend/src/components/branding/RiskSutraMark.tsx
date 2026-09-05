@@ -6,12 +6,14 @@ interface RiskSutraMarkProps {
   size?: number;
   className?: string;
   animated?: boolean;
+  orbitAnimated?: boolean;
 }
 
 export const RiskSutraMark: React.FC<RiskSutraMarkProps> = ({
   size = 48,
   className = '',
   animated = true,
+  orbitAnimated = false,
 }) => {
   const markId = React.useId();
   const gradOuter = `grad-outer-${markId}`;
@@ -27,8 +29,8 @@ export const RiskSutraMark: React.FC<RiskSutraMarkProps> = ({
       viewBox="0 0 120 120"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={`risksutra-mark ${animated ? 'animated-mark' : ''} ${className}`}
-      style={{ display: 'block', flexShrink: 0 }}
+      className={`risksutra-mark ${animated ? 'animated-mark' : ''} ${orbitAnimated ? 'orbit-enabled' : ''} ${className}`}
+      style={{ display: 'block', flexShrink: 0, overflow: 'visible' }}
     >
       <defs>
         {/* Glow Filter */}
@@ -69,9 +71,25 @@ export const RiskSutraMark: React.FC<RiskSutraMarkProps> = ({
       </defs>
 
       <style>{`
+        @keyframes orbitClockwise {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        @keyframes orbitCounterClockwise {
+          from { transform: rotate(360deg); }
+          to { transform: rotate(0deg); }
+        }
         @keyframes sparkPulse {
-          0%, 100% { transform: scale(1); opacity: 0.95; filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.6)); }
-          50% { transform: scale(1.06); opacity: 1; filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.9)); }
+          0%, 100% {
+            transform: scale(1);
+            opacity: 0.95;
+            filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.6));
+          }
+          50% {
+            transform: scale(1.08);
+            opacity: 1;
+            filter: drop-shadow(0 0 9px rgba(168, 85, 247, 0.95));
+          }
         }
         @keyframes arcGlow {
           0%, 100% { opacity: 0.85; }
@@ -81,9 +99,11 @@ export const RiskSutraMark: React.FC<RiskSutraMarkProps> = ({
           0%, 100% { opacity: 0.75; }
           50% { opacity: 1; }
         }
+
         .animated-mark .spark-star {
           transform-origin: 60px 60px;
-          animation: sparkPulse 4s ease-in-out infinite;
+          transform-box: view-box;
+          animation: sparkPulse 3.8s ease-in-out infinite;
         }
         .animated-mark .main-arc {
           animation: arcGlow 3s ease-in-out infinite;
@@ -91,74 +111,121 @@ export const RiskSutraMark: React.FC<RiskSutraMarkProps> = ({
         .animated-mark .axis-line {
           animation: axisGlow 3.5s ease-in-out infinite;
         }
+
+        /* Continuous Kinetic Orbit (Harmonic 24s/16s Gyroscopic Motion) */
+        .orbit-enabled .orbiting-clockwise {
+          transform-origin: 60px 60px;
+          transform-box: view-box;
+          animation: orbitClockwise 24s linear infinite;
+          will-change: transform;
+        }
+        .orbit-enabled .orbiting-counter {
+          transform-origin: 60px 60px;
+          transform-box: view-box;
+          animation: orbitCounterClockwise 16s linear infinite;
+          will-change: transform;
+        }
       `}</style>
 
-      {/* Background Subtle Outer Full Ring */}
-      <circle
-        cx="60"
-        cy="60"
-        r="48"
-        stroke={`url(#${gradOuter})`}
-        strokeWidth="1"
-        strokeOpacity="0.25"
-      />
+      {/* ── Group 1: Outer Orbital Gyroscope Ring (Rotates Clockwise) ── */}
+      <g
+        className={`orbit-outer ${orbitAnimated ? 'orbiting-clockwise' : ''}`}
+        style={{ transformOrigin: '60px 60px', transformBox: 'view-box' }}
+      >
+        {/* Background Subtle Outer Full Ring */}
+        <circle
+          cx="60"
+          cy="60"
+          r="48"
+          stroke={`url(#${gradOuter})`}
+          strokeWidth="1"
+          strokeOpacity="0.25"
+        />
 
-      {/* Main Outer Segmented Glowing Arc (Top-Right around Left to Bottom) */}
-      <path
-        className="main-arc"
-        d="M 60 12 A 48 48 0 1 0 42 106.5"
-        stroke={`url(#${gradOuter})`}
-        strokeWidth="3.5"
-        strokeLinecap="round"
-        filter={`url(#${glowFilter})`}
-      />
+        {/* Main Outer Segmented Glowing Arc */}
+        <path
+          className="main-arc"
+          d="M 60 12 A 48 48 0 1 0 42 106.5"
+          stroke={`url(#${gradOuter})`}
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          filter={`url(#${glowFilter})`}
+        />
 
-      {/* Secondary Inner Arc */}
-      <path
-        d="M 60 22 A 38 38 0 0 0 32 86"
-        stroke={`url(#${gradInner})`}
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        opacity="0.85"
-      />
+        {/* Right Side Thin Ring Segment with Dash Pattern */}
+        <path
+          d="M 72 15.5 A 48 48 0 0 1 72 104.5"
+          stroke="#8B5CF6"
+          strokeWidth="1.25"
+          strokeOpacity="0.6"
+          strokeDasharray="70 8"
+        />
 
-      {/* Right Side Thin Ring Segment */}
-      <path
-        d="M 72 15.5 A 48 48 0 0 1 72 104.5"
-        stroke="#8B5CF6"
-        strokeWidth="1.25"
-        strokeOpacity="0.6"
-        strokeDasharray="70 8"
-      />
+        {/* Luminous Orbital Satellite Node at Arc Apex */}
+        <circle
+          cx="60"
+          cy="12"
+          r="2.8"
+          fill="#00F0FF"
+          filter={`url(#${glowFilter})`}
+        />
+      </g>
 
-      {/* Right Side Inner Thin Arc Ticks */}
-      <path
-        d="M 70 28 A 38 38 0 0 1 70 92"
-        stroke="#6366F1"
-        strokeWidth="1"
-        strokeOpacity="0.35"
-      />
+      {/* ── Group 2: Inner Orbital Track (Rotates Counter-Clockwise) ── */}
+      <g
+        className={`orbit-inner ${orbitAnimated ? 'orbiting-counter' : ''}`}
+        style={{ transformOrigin: '60px 60px', transformBox: 'view-box' }}
+      >
+        {/* Secondary Inner Arc */}
+        <path
+          d="M 60 22 A 38 38 0 0 0 32 86"
+          stroke={`url(#${gradInner})`}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          opacity="0.85"
+        />
 
-      {/* Central Vertical Axis Line */}
-      <line
-        className="axis-line"
-        x1="60"
-        y1="6"
-        x2="60"
-        y2="114"
-        stroke={`url(#${gradAxis})`}
-        strokeWidth="2"
-        strokeLinecap="round"
-        filter={`url(#${glowFilter})`}
-      />
+        {/* Right Side Inner Thin Arc Ticks */}
+        <path
+          d="M 70 28 A 38 38 0 0 1 70 92"
+          stroke="#6366F1"
+          strokeWidth="1"
+          strokeOpacity="0.35"
+        />
 
-      {/* Central Spark Star (4-Point Diamond Spark) */}
-      <path
-        className="spark-star"
-        d="M 60 42 Q 60 60 78 60 Q 60 60 60 78 Q 60 60 42 60 Q 60 60 60 42 Z"
-        fill={`url(#${gradSpark})`}
-        filter={`url(#${glowFilter})`}
-      />
+        {/* Trailing Micro Node on Inner Track */}
+        <circle
+          cx="60"
+          cy="22"
+          r="2.2"
+          fill="#C084FC"
+          filter={`url(#${glowFilter})`}
+        />
+      </g>
+
+      {/* ── Group 3: Core Sentinel Spark & Axis Anchor (Steady Reference) ── */}
+      <g className="core-anchor">
+        {/* Central Vertical Axis Line */}
+        <line
+          className="axis-line"
+          x1="60"
+          y1="6"
+          x2="60"
+          y2="114"
+          stroke={`url(#${gradAxis})`}
+          strokeWidth="2"
+          strokeLinecap="round"
+          filter={`url(#${glowFilter})`}
+        />
+
+        {/* Central Spark Star (4-Point Diamond Spark) */}
+        <path
+          className="spark-star"
+          d="M 60 42 Q 60 60 78 60 Q 60 60 60 78 Q 60 60 42 60 Q 60 60 60 42 Z"
+          fill={`url(#${gradSpark})`}
+          filter={`url(#${glowFilter})`}
+        />
+      </g>
     </svg>
   );
 };

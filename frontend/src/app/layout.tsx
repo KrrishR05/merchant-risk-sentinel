@@ -4,6 +4,15 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "RiskSūtra — AI Merchant Risk Intelligence",
   description: "Detect merchant account takeover through behavioral genome analysis and temporal attack-chain detection.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/icon.png", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-icon.png" },
+    ],
+  },
 };
 
 export default function RootLayout({

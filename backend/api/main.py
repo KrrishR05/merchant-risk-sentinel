@@ -8,6 +8,7 @@ fraud spike detection, syndicate graph abuse clusters, and incident management.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -20,8 +21,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
-# Ensure backend modules are importable
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure backend and root modules are importable
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+root_dir = os.path.dirname(backend_dir)
+if backend_dir in sys.path:
+    sys.path.remove(backend_dir)
+sys.path.insert(0, backend_dir)
+if root_dir not in sys.path:
+    sys.path.append(root_dir)
 
 from db import database as db
 from models.schemas import (
@@ -47,7 +54,15 @@ from services.risk_orchestrator import (
 )
 from services.synthetic_generator import (
     inject_ato_credential_theft,
+    inject_ato_case_b_network_pivot,
+    inject_ato_case_c_geo_spike,
+    inject_ato_case_d_payout_drain,
+    inject_ato_case_e_stealth_mixed,
     inject_legitimate_spike,
+    inject_benign_weekend_surge,
+    inject_benign_festive_spike,
+    inject_benign_api_integration,
+    inject_benign_seasonal_sale,
 )
 
 logging.basicConfig(
@@ -493,6 +508,31 @@ def get_risk_analytics():
     }
 
 
+@app.get("/evaluation/results")
+def get_evaluation_results():
+    """Retrieve reproducible held-out test evaluation results and cost analysis."""
+    import json
+    paths = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "evaluation_results.json")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "evaluation_results.json")),
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning("Failed to read %s: %s", p, e)
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    for p in [root, backend_path]:
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    from ml.evaluation.run_evaluation import run_evaluation
+    return run_evaluation()
+
+
+
 # ──────────────────────────────────────────────
 # Scenario Injection
 # ──────────────────────────────────────────────
@@ -509,12 +549,30 @@ def inject_scenario(req: ScenarioRequest):
     if not merchant:
         raise HTTPException(status_code=404, detail=f"Merchant {req.merchant_id} not found")
 
-    if req.scenario_type == "ato_credential_theft":
-        events, scenario = inject_ato_credential_theft(merchant)
-    elif req.scenario_type == "legitimate_spike":
-        events, scenario = inject_legitimate_spike(merchant)
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown scenario type: {req.scenario_type}")
+    scenario_handlers = {
+        # ATO attack scenarios
+        "ato_credential_theft": inject_ato_credential_theft,
+        "ato_case_b_network_pivot": inject_ato_case_b_network_pivot,
+        "ato_case_c_geo_spike": inject_ato_case_c_geo_spike,
+        "ato_case_d_payout_drain": inject_ato_case_d_payout_drain,
+        "ato_case_e_stealth_mixed": inject_ato_case_e_stealth_mixed,
+        # Benign negative controls / business spikes
+        "legitimate_spike": inject_legitimate_spike,
+        "legitimate_traffic_spike": inject_legitimate_spike,
+        "benign_weekend_surge": inject_benign_weekend_surge,
+        "benign_festive_spike": inject_benign_festive_spike,
+        "benign_api_integration": inject_benign_api_integration,
+        "benign_seasonal_sale": inject_benign_seasonal_sale,
+    }
+
+    handler = scenario_handlers.get(req.scenario_type)
+    if not handler:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown scenario type: {req.scenario_type}. Supported types: {list(scenario_handlers.keys())}",
+        )
+
+    events, scenario = handler(merchant)
 
     result = ingest_events_batch(events)
     existing_incidents = db.get_merchant_incidents(req.merchant_id)
@@ -522,12 +580,19 @@ def inject_scenario(req: ScenarioRequest):
 
     assessment = result.get("risk_assessment") or get_merchant_risk(req.merchant_id)
 
+    is_benign = (
+        req.scenario_type.startswith("legitimate")
+        or req.scenario_type.startswith("benign")
+        or getattr(scenario, "label", "") == "benign"
+    )
+    incident_type = "LEGITIMATE_SPIKE_EVAL" if is_benign else "ATO"
+
     if active_incident:
         active_incident.evidence_event_ids = [e.event_id for e in events]
         active_incident.signal_ids = [s.signal_id for s in assessment.top_signals]
         active_incident.risk_score = assessment.risk_score
         active_incident.risk_band = assessment.risk_band
-        active_incident.incident_type = "LEGITIMATE_SPIKE_EVAL" if req.scenario_type == "legitimate_spike" else "ATO"
+        active_incident.incident_type = incident_type
         active_incident.summary = f"Scenario {req.scenario_type} evaluation incident"
         active_incident.evidence_version = getattr(active_incident, "evidence_version", 1) + 1
         db.save_incident(active_incident)
@@ -538,7 +603,7 @@ def inject_scenario(req: ScenarioRequest):
             merchant_id=req.merchant_id,
             created_at=datetime.now(timezone.utc),
             status=IncidentStatus.OPEN,
-            incident_type="LEGITIMATE_SPIKE_EVAL" if req.scenario_type == "legitimate_spike" else "RISK_EVALUATION",
+            incident_type=incident_type,
             risk_score=assessment.risk_score,
             risk_band=assessment.risk_band,
             signal_ids=[s.signal_id for s in assessment.top_signals],

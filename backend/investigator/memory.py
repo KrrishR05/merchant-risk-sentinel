@@ -336,7 +336,7 @@ def search_historical_cases(
                 merchant_id=mem.merchant_id,
                 similarity_percentage=sim,
                 outcome=mem.outcome,
-                pattern=mem.temporal_pattern or "Sequential baseline deviation",
+                pattern=(mem.temporal_pattern if (mem.temporal_pattern and mem.temporal_pattern != "NONE") else "Sequential baseline deviation"),
                 resolution=resolution_str,
                 relevance_notes=f"Correlates with observed {mem.incident_type} workflow in {mem.merchant_type} archetype.",
             )

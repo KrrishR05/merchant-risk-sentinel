@@ -224,6 +224,40 @@ export interface InvestigationAuditRecord {
   error_message: string | null;
 }
 
+export interface EvaluationMetricsData {
+  precision: number;
+  recall: number;
+  f1_score: number;
+  false_positive_rate: number;
+  false_positive_count: number;
+  false_negative_count: number;
+  true_positive_count: number;
+  true_negative_count: number;
+  detection_lead_time_seconds: number;
+  attack_chain_recall: number;
+}
+
+export interface CostModelData {
+  fp_count: number;
+  fp_unit_cost: number;
+  fp_total_cost: number;
+  fn_count: number;
+  fn_unit_cost: number;
+  fn_total_cost: number;
+  total_expected_cost: number;
+  currency: string;
+  assumptions_note: string;
+}
+
+export interface EvaluationReport {
+  held_out_scenarios_count: number;
+  metrics_baseline: EvaluationMetricsData;
+  metrics_risksutra: EvaluationMetricsData;
+  cost_baseline: CostModelData;
+  cost_risksutra: CostModelData;
+  cost_savings: number;
+}
+
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -273,6 +307,7 @@ export const api = {
     }),
   getCaseMemory: (excludeIncidentId?: string) =>
     apiFetch<{ case_memories: unknown[]; count: number }>(`/cases/memory${excludeIncidentId ? `?exclude_incident_id=${excludeIncidentId}` : ''}`),
+  getEvaluation: () => apiFetch<EvaluationReport>('/evaluation/results'),
   // AI Investigator APIs
   investigateIncident: (incidentId: string) =>
     apiFetch<{ incident_id: string; investigation: AIInvestigationResult; audit: InvestigationAuditRecord }>(
